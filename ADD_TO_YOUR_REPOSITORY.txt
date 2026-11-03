@@ -1,0 +1,23 @@
+VAHANSETU — MEMBER 2 DELIVERY
+
+1. Extract this ZIP directly into the root of your cloned VaahanSetu repository
+   (the folder that contains backend, database, docs, frontend, src, and tests).
+2. When Windows asks, choose Merge folders. Do not replace or delete backend,
+   database, frontend, src, or tests.
+3. Open the officer-desktop folder in VS Code.
+4. Run compile.bat from PowerShell:
+      .\compile.bat
+
+Demo-only login accounts:
+  Admin:   admin / admin123
+  Officer: officer / officer123
+
+The desktop UI currently uses in-memory demo services. It is runnable and
+covers the Member 2 screens/workflow, but is not connected to PostgreSQL or
+live officer APIs yet. The backend-integration requirements are in:
+  officer-desktop/docs/BACKEND_INTEGRATION_REQUIREMENTS.md
+
+To run the automated smoke checks on Windows:
+  .\test.bat
+
+Do not commit real database passwords or .env files.
