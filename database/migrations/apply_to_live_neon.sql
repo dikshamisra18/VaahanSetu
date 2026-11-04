@@ -28,13 +28,18 @@ COMMENT ON COLUMN planning_sessions.simulation_elapsed_minutes IS
 -- =====================================================================
 -- CHANGE 2: real BCrypt password hashes
 -- =====================================================================
--- The hash below is a valid BCrypt hash with cost factor 10.
--- It encodes the password: admin123
--- Both admin and officer1 get the SAME password (dev/demo only).
+-- The hashes below are valid BCrypt hashes (verified with bcrypt
+-- library before being committed). They encode:
+--   admin    -> admin123
+--   officer1 -> officer123
 -- REPLACE these before any real deployment.
 UPDATE users
-SET password_hash = '$2a$10$7EqJtq98hPqEX7fNZaFWoO.f0j80e9mQ08d23yC8w7bM8Wk2n2m8K'
-WHERE username IN ('admin', 'officer1');
+SET password_hash = '$2b$10$65dYhtveiCDlhxPoyTPatOqWfNRPTuKr/8rey6kB1yUgZdTbk46nC'
+WHERE username = 'admin';
+
+UPDATE users
+SET password_hash = '$2b$10$S0T6EVuQqH2QWGC4rICfjOul2eNckH5c3g6.XOVbP4XxGO9LzynEC'
+WHERE username = 'officer1';
 
 -- =====================================================================
 -- CHANGE 3: advance scheduled trips to today
