@@ -29,5 +29,3 @@ services:
     rootDir: frontend
     buildCommand: echo "Deploying static assets"
     staticPublishPath: .
-    region: singapore
-    plan: free
