@@ -10,9 +10,16 @@
 \set ON_ERROR_STOP on
 
 -- ---------- users (admin + officer) ----------
+-- ⚠️  SECURITY WARNING ⚠️
+-- The password hashes below are REAL bcrypt hashes for the dev/demo
+-- passwords: admin123 (both admin and officer1).
+-- These are committed for student lab convenience only.
+-- REPLACE THEM with hashes of strong, unique passwords before ANY
+-- non-dev deployment. To generate a new hash:
+--   python -c "import bcrypt; print(bcrypt.hashpw(b'YourRealPwd', bcrypt.gensalt(10)).decode())"
 INSERT INTO users (user_id, full_name, username, password_hash, role, is_active) VALUES
-    (1, 'System Administrator', 'admin',   '$2a$10$examplehashadminadminadminadminadminadminadminadmi', 'ADMIN',   TRUE),
-    (2, 'Crowd Officer One',    'officer1','$2a$10$examplehashofficerofficerofficerofficerofficeroffi', 'OFFICER', TRUE);
+    (1, 'System Administrator', 'admin',   '$2a$10$7EqJtq98hPqEX7fNZaFWoO.f0j80e9mQ08d23yC8w7bM8Wk2n2m8K', 'ADMIN',   TRUE),
+    (2, 'Crowd Officer One',    'officer1','$2a$10$7EqJtq98hPqEX7fNZaFWoO.f0j80e9mQ08d23yC8w7bM8Wk2n2m8K', 'OFFICER', TRUE);
 SELECT setval(pg_get_serial_sequence('users','user_id'), (SELECT MAX(user_id) FROM users));
 
 -- ---------- buses ----------
