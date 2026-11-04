@@ -1,15 +1,20 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal
 cd /d "%~dp0"
 if exist test-out rmdir /s /q test-out
 mkdir test-out
-set "SOURCES="
-for /r "src" %%f in (*.java) do set "SOURCES=!SOURCES! "%%f""
-javac -encoding UTF-8 -d test-out !SOURCES!
+dir /s /b src\*.java > test-sources.txt
+javac -encoding UTF-8 -d test-out @test-sources.txt
+del test-sources.txt
 if errorlevel 1 (
   echo Compilation failed.
   pause
   exit /b 1
 )
 java -cp test-out vaahansetu.desktop.Member2SmokeCheck
-if errorlevel 1 pause
+if errorlevel 1 (
+  echo Smoke checks failed.
+  pause
+  exit /b 1
+)
+java -cp test-out vaahansetu.desktop.ApiServicesSmokeCheck

@@ -1,4 +1,3 @@
-
 package com.vaahansetu.repository;
 
 import java.time.LocalDate;
@@ -25,19 +24,57 @@ public class JourneyRepository {
                        st.trip_id AS "tripId",
                        st.route_id AS "routeId",
                        st.service_date AS "serviceDate",
+                       TO_CHAR(st.departure_time, 'HH24:MI') AS "departureTimeFormatted",
+                       TO_CHAR(st.expected_arrival_time, 'HH24:MI') AS "arrivalTimeFormatted",
                        st.departure_time AS "departureTime",
                        st.expected_arrival_time AS "expectedArrivalTime",
-                       st.status
+                       st.status,
+                       ta.bus_id AS "busId",
+                       b.registration_number AS "registrationNumber",
+                       b.capacity
                 FROM scheduled_trips st
-                JOIN trip_assignments ta
+                LEFT JOIN trip_assignments ta
                     ON ta.trip_id = st.trip_id
-                JOIN buses b
+                LEFT JOIN buses b
                     ON b.bus_id = ta.bus_id
                 WHERE st.route_id = ?
                   AND st.service_date = ?
                   AND ta.status = 'ACTIVE'
                   AND st.status = 'SCHEDULED'
                   AND b.status = 'ACTIVE'
+                ORDER BY st.departure_time
+                """;
+
+        return jdbcTemplate.queryForList(
+                sql,
+                routeId,
+                LocalDate.now()
+        );
+    }
+
+    // Find all trips for a route today (whether bus is allocated yet or not)
+    public List<Map<String, Object>> findTripsForRoute(Long routeId) {
+
+        String sql = """
+                SELECT st.trip_id AS "tripId",
+                       st.route_id AS "routeId",
+                       st.service_date AS "serviceDate",
+                       TO_CHAR(st.departure_time, 'HH24:MI') AS "departureTimeFormatted",
+                       TO_CHAR(st.expected_arrival_time, 'HH24:MI') AS "arrivalTimeFormatted",
+                       st.departure_time AS "departureTime",
+                       st.expected_arrival_time AS "expectedArrivalTime",
+                       st.status,
+                       ta.bus_id AS "busId",
+                       COALESCE(b.registration_number, 'UNASSIGNED') AS "registrationNumber",
+                       COALESCE(b.capacity, 0) AS "capacity"
+                FROM scheduled_trips st
+                LEFT JOIN trip_assignments ta
+                    ON ta.trip_id = st.trip_id AND ta.status = 'ACTIVE'
+                LEFT JOIN buses b
+                    ON b.bus_id = ta.bus_id
+                WHERE st.route_id = ?
+                  AND st.service_date = ?
+                  AND st.status = 'SCHEDULED'
                 ORDER BY st.departure_time
                 """;
 
@@ -117,6 +154,39 @@ public class JourneyRepository {
         );
     }
 
+    // Check if a duplicate journey was submitted recently within 2 minutes (SRS F9, NFR-S7)
+    public boolean isDuplicateJourney(
+            Long sessionId,
+            Long tripId,
+            Long boardingStopId,
+            Long destinationStopId,
+            Integer passengerCount) {
+
+        String sql = """
+                SELECT COUNT(*)
+                FROM passenger_journeys
+                WHERE session_id = ?
+                  AND trip_id = ?
+                  AND boarding_stop_id = ?
+                  AND destination_stop_id = ?
+                  AND passenger_count = ?
+                  AND journey_status IN ('REGISTERED', 'BOARDED')
+                  AND submitted_at >= NOW() - INTERVAL '2 minutes'
+                """;
+
+        Integer count = jdbcTemplate.queryForObject(
+                sql,
+                Integer.class,
+                sessionId,
+                tripId,
+                boardingStopId,
+                destinationStopId,
+                passengerCount
+        );
+
+        return count != null && count > 0;
+    }
+
     // Find a saved journey
     public Map<String, Object> findJourneyById(Long journeyId) {
 
@@ -127,7 +197,11 @@ public class JourneyRepository {
                        pj.boarding_stop_id AS "boardingStopId",
                        pj.destination_stop_id AS "destinationStopId",
                        pj.passenger_count AS "passengerCount",
-                       pj.journey_status AS "journeyStatus"
+                       pj.journey_status AS "journeyStatus",
+                       pj.boarding_confirmed_at AS "boardingConfirmedAt",
+                       pj.alighting_confirmed_at AS "alightingConfirmedAt",
+                       pj.submitted_at AS "submittedAt",
+                       pj.passenger_reference AS "passengerReference"
                 FROM passenger_journeys pj
                 JOIN scheduled_trips st
                     ON st.trip_id = pj.trip_id
@@ -160,11 +234,28 @@ public class JourneyRepository {
     // Update the status of a passenger journey
     public int updateJourneyStatus(Long journeyId, String status) {
 
-        String sql = """
-                UPDATE passenger_journeys
-                SET journey_status = ?
-                WHERE journey_id = ?
-                """;
+        String sql;
+        if ("BOARDED".equalsIgnoreCase(status)) {
+            sql = """
+                    UPDATE passenger_journeys
+                    SET journey_status = ?::journey_status,
+                        boarding_confirmed_at = COALESCE(boarding_confirmed_at, NOW())
+                    WHERE journey_id = ?
+                    """;
+        } else if ("COMPLETED".equalsIgnoreCase(status)) {
+            sql = """
+                    UPDATE passenger_journeys
+                    SET journey_status = ?::journey_status,
+                        alighting_confirmed_at = COALESCE(alighting_confirmed_at, NOW())
+                    WHERE journey_id = ?
+                    """;
+        } else {
+            sql = """
+                    UPDATE passenger_journeys
+                    SET journey_status = ?::journey_status
+                    WHERE journey_id = ?
+                    """;
+        }
 
         return jdbcTemplate.update(
                 sql,

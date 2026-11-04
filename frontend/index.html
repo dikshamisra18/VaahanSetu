@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,14 +10,21 @@
 <body>
 
     <header class="header">
-        <h1>VaahanSetu</h1>
-        <p>Smart Bus Allocation and Crowd Management</p>
+        <div class="header-inner">
+            <div class="header-titles">
+                <h1>VaahanSetu</h1>
+                <p>Smart Bus Allocation and Crowd Management</p>
+            </div>
+            <div class="header-links">
+                <a href="admin.html" class="nav-switch-btn">Admin Portal &rarr;</a>
+            </div>
+        </div>
     </header>
 
     <main>
         <section class="welcome">
             <h2>Welcome aboard!</h2>
-            <p>Plan your journey easily. Select your route and travel details below.</p>
+            <p>Plan your journey easily. Select your route, departure trip, and travel stops below.</p>
         </section>
 
         <section class="booking-card">
@@ -44,6 +50,11 @@
                         <span id="routeDuration">-</span>
                     </p>
                 </div>
+
+                <label for="tripSelect">Scheduled Departure Trip</label>
+                <select id="tripSelect" name="tripSelect" required>
+                    <option value="">Choose a scheduled departure</option>
+                </select>
 
                 <div id="busDetails" class="bus-details" hidden>
                     <h3>Bus Information</h3>
@@ -78,11 +89,11 @@
                     </button>
 
                     <span
-    id="passengerCountValue"
-    aria-live="polite"
-    aria-label="1 passenger, minimum 1 and maximum 10">
-    1
-</span>
+                        id="passengerCountValue"
+                        aria-live="polite"
+                        aria-label="1 passenger, minimum 1 and maximum 10">
+                        1
+                    </span>
 
                     <button
                         type="button"
@@ -105,35 +116,47 @@
 
                 <p><strong>Journey ID:</strong> <span id="confirmJourneyId">-</span></p>
                 <p><strong>Route:</strong> <span id="confirmRoute">-</span></p>
+                <p><strong>Scheduled Trip:</strong> <span id="confirmTrip">-</span></p>
                 <p><strong>Boarding Stop:</strong> <span id="confirmBoarding">-</span></p>
                 <p><strong>Destination:</strong> <span id="confirmDestination">-</span></p>
                 <p><strong>Passengers:</strong> <span id="confirmPassengers">-</span></p>
-                <p><strong>Status:</strong> <span id="confirmStatus">-</span></p>
+                <p><strong>Status:</strong> <span id="confirmStatus" class="status-badge">-</span></p>
+
+                <div class="journey-actions">
+                    <button type="button" id="boardJourneyBtn" class="action-btn board-btn">Confirm Boarding</button>
+                    <button type="button" id="completeJourneyBtn" class="action-btn complete-btn">Confirm Alighting / Complete</button>
+                    <button type="button" id="cancelJourneyBtn" class="action-btn cancel-btn">Cancel Journey</button>
+                </div>
+                <p id="actionFeedback" class="action-feedback" aria-live="polite"></p>
+                <div style="margin-top: 12px; text-align: center;">
+                    <button type="button" id="newBookingBtn" class="action-btn" style="width: 100%; background: #0284c7; color: white; padding: 10px 16px; font-size: 14px; font-weight: 600; border-radius: 8px;">+ Book Another Journey</button>
+                </div>
             </div>
+
             <div id="waitingCard" class="waiting-card" hidden>
-    <h3>Journey Not Registered Yet</h3>
-    <p>No buses are available for this route right now.</p>
-    <p>Please wait for bus allocation and try again.</p>
-</div>
+                <h3>Journey Not Registered Yet</h3>
+                <p>No buses are available for this route right now.</p>
+                <p>Please wait for bus allocation and try again.</p>
+            </div>
 
         </section>
 
         <section class="demand-card">
-    <h2>Passenger Demand</h2>
-    <p>Registered passenger demand for your selected route.</p>
+            <h2>Passenger Demand</h2>
+            <p>Registered passenger demand for your selected route.</p>
 
-    <div id="demandList"
-         class="demand-list"
-         aria-live="polite"
-         hidden>
-    </div>
-</section>
+            <div id="demandList"
+                 class="demand-list"
+                 aria-live="polite"
+                 hidden>
+            </div>
+        </section>
 
         <section class="travel-note">
             <p>
                 <strong>Travel tip:</strong>
                 Please select your boarding stop and destination carefully
-                before confirming your journey.
+                before confirming your journey. You can confirm your boarding and arrival directly after registration.
             </p>
         </section>
     </main>
@@ -142,6 +165,7 @@
         <p>© 2026 VaahanSetu | Smart and Efficient Public Transport</p>
     </footer>
 
+    <script src="config.js"></script>
     <script src="app.js"></script>
 
 </body>

@@ -25,7 +25,7 @@ if errorlevel 1 (
 
 echo.
 echo Compilation successful. Starting VaahanSetu Officer Desktop...
-java -cp out vaahansetu.desktop.ui.Main
+java -cp out vaahansetu.desktop.ui.Main %*
 if errorlevel 1 (
   echo.
   echo The desktop application could not start. Copy the error messages and send them to me.

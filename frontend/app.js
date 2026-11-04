@@ -1,10 +1,14 @@
-
 "use strict";
 
-const API_BASE_URL = "http://localhost:8080/api";
+const API_BASE_URL = window.VAAHAN_API_URL || (
+    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+        ? "http://localhost:8080/api"
+        : `${window.location.origin}/api`
+);
 
 const journeyForm = document.getElementById("journeyForm");
 const routeSelect = document.getElementById("route");
+const tripSelect = document.getElementById("tripSelect");
 const boardingSelect = document.getElementById("boarding");
 const destinationSelect = document.getElementById("destination");
 const message = document.getElementById("message");
@@ -29,13 +33,20 @@ const demandList = document.getElementById("demandList");
 
 const confirmJourneyId = document.getElementById("confirmJourneyId");
 const confirmRoute = document.getElementById("confirmRoute");
+const confirmTrip = document.getElementById("confirmTrip");
 const confirmBoarding = document.getElementById("confirmBoarding");
 const confirmDestination = document.getElementById("confirmDestination");
 const confirmPassengers = document.getElementById("confirmPassengers");
 const confirmStatus = document.getElementById("confirmStatus");
 
+const boardJourneyBtn = document.getElementById("boardJourneyBtn");
+const completeJourneyBtn = document.getElementById("completeJourneyBtn");
+const cancelJourneyBtn = document.getElementById("cancelJourneyBtn");
+const actionFeedback = document.getElementById("actionFeedback");
+
 let passengerCount = 1;
 let routes = [];
+let routeTrips = [];
 
 let busPollingTimer = null;
 let currentBusRouteId = null;
@@ -43,14 +54,12 @@ let currentBusRouteId = null;
 let statusPollingTimer = null;
 let activeJourneyId = null;
 
-
 // ======================================
 // PASSENGER COUNT
 // ======================================
 
 function updatePassengerCount() {
     passengerCountValue.textContent = passengerCount;
-
     passengerCountValue.setAttribute(
         "aria-label",
         `${passengerCount} passengers, minimum 1 and maximum 10`
@@ -71,7 +80,6 @@ decreasePassengers.addEventListener("click", function () {
     }
 });
 
-
 // ======================================
 // DROPDOWN FUNCTION
 // ======================================
@@ -82,19 +90,15 @@ function populateDropdown(selectElement, items, placeholder) {
     const firstOption = document.createElement("option");
     firstOption.value = "";
     firstOption.textContent = placeholder;
-
     selectElement.appendChild(firstOption);
 
     items.forEach(function (item) {
         const option = document.createElement("option");
-
         option.value = item.value;
         option.textContent = item.label;
-
         selectElement.appendChild(option);
     });
 }
-
 
 // ======================================
 // LOAD ROUTES
@@ -115,50 +119,79 @@ async function loadRoutes() {
 
         routes = await response.json();
 
-        if (!Array.isArray(routes)) {
-            throw new Error("Invalid routes response.");
+        if (!Array.isArray(routes) || routes.length === 0) {
+            message.textContent = "No routes available at the moment.";
+            populateDropdown(routeSelect, [], "No routes available");
+            return;
         }
 
-        populateDropdown(
-            routeSelect,
-            routes.map(function (route) {
-                return {
-                    value: String(route.routeId),
-                    label: route.routeName
-                };
-            }),
-            "Choose a route"
-        );
+        const routeItems = routes.map(function (route) {
+            return {
+                value: route.routeId,
+                label: `${route.routeCode || route.routeName} (${route.originName} → ${route.destinationName})`
+            };
+        });
 
-        message.textContent = routes.length > 0
-            ? "Routes loaded successfully."
-            : "No routes are currently available.";
-
-        await loadPassengerDemand();
+        populateDropdown(routeSelect, routeItems, "Choose a route");
+        message.textContent = "";
 
     } catch (error) {
         console.error("Route loading error:", error);
-
-        message.textContent =
-            "Could not load routes. Make sure the backend is running.";
+        message.textContent = "Unable to connect to backend service. Please check connection.";
+        populateDropdown(routeSelect, [], "Could not load routes");
     }
 }
 
+// ======================================
+// LOAD SCHEDULED TRIPS FOR ROUTE
+// ======================================
+
+async function loadScheduledTrips(routeId) {
+    try {
+        const response = await fetch(
+            `${API_BASE_URL}/routes/${routeId}/trips`,
+            { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+            throw new Error("Could not load trips.");
+        }
+
+        routeTrips = await response.json();
+
+        if (!Array.isArray(routeTrips) || routeTrips.length === 0) {
+            populateDropdown(tripSelect, [], "No scheduled departures today");
+            return;
+        }
+
+        const tripItems = routeTrips.map(function (trip) {
+            const dep = trip.departureTimeFormatted || (trip.departureTime ? trip.departureTime.substring(11, 16) : "Dep");
+            const arr = trip.arrivalTimeFormatted || (trip.expectedArrivalTime ? trip.expectedArrivalTime.substring(11, 16) : "Arr");
+            const busInfo = trip.registrationNumber && trip.registrationNumber !== "UNASSIGNED"
+                ? ` [Bus: ${trip.registrationNumber} (${trip.capacity} seats)]`
+                : " [Pending allocation]";
+            return {
+                value: trip.tripId,
+                label: `Departure ${dep} - Arrival ${arr}${busInfo}`
+            };
+        });
+
+        populateDropdown(tripSelect, tripItems, "Choose a scheduled departure");
+        if (tripItems.length > 0) {
+            tripSelect.selectedIndex = 1;
+        }
+
+    } catch (error) {
+        console.error("Trip loading error:", error);
+        populateDropdown(tripSelect, [], "Could not load trips");
+    }
+}
 
 // ======================================
-// PASSENGER DEMAND
+// LOAD PASSENGER DEMAND
 // ======================================
 
 async function loadPassengerDemand() {
-    const selectedRouteId = routeSelect.value;
-
-    demandList.replaceChildren();
-    demandList.hidden = true;
-
-    if (!selectedRouteId) {
-        return;
-    }
-
     try {
         const response = await fetch(
             `${API_BASE_URL}/passenger-journeys/demand`,
@@ -169,67 +202,54 @@ async function loadPassengerDemand() {
             throw new Error("Could not load passenger demand.");
         }
 
-        const demand = await response.json();
+        const demandData = await response.json();
+        demandList.replaceChildren();
 
-        if (routeSelect.value !== selectedRouteId) return;
+        if (!Array.isArray(demandData) || demandData.length === 0) {
+            demandList.hidden = true;
+            return;
+        }
 
-        const route = routes.find(function (item) {
-            return String(item.routeId) === String(selectedRouteId);
+        demandList.hidden = false;
+
+        demandData.forEach(function (item) {
+            const route = routes.find(function (r) {
+                return Number(r.routeId) === Number(item.routeId);
+            });
+
+            const routeTitle = route
+                ? `${route.routeCode || route.routeName} (${route.originName} → ${route.destinationName})`
+                : `Route ID: ${item.routeId}`;
+
+            const demandCard = document.createElement("div");
+            demandCard.className = "demand-item";
+
+            const title = document.createElement("h3");
+            title.textContent = routeTitle;
+
+            const count = document.createElement("p");
+            count.className = "passenger-count";
+            count.textContent = `${item.passengerCount} passenger(s) registered`;
+
+            demandCard.appendChild(title);
+            demandCard.appendChild(count);
+            demandList.appendChild(demandCard);
         });
 
-        const count = demand
-            ? demand[selectedRouteId] ?? 0
-            : 0;
-
-        const card = document.createElement("div");
-        card.className = "demand-item";
-
-        const heading = document.createElement("h3");
-        heading.textContent = route
-            ? `${route.routeCode} - ${route.routeName}`
-            : `Route ${selectedRouteId}`;
-
-        const passengerText = document.createElement("p");
-        passengerText.textContent =
-            `${count} registered passenger(s)`;
-
-        card.appendChild(heading);
-        card.appendChild(passengerText);
-
-        demandList.appendChild(card);
-        demandList.hidden = false;
-
     } catch (error) {
-        if (routeSelect.value !== selectedRouteId) return;
-
-        console.error("Passenger demand error:", error);
-
-        demandList.textContent =
-            "Could not load passenger demand.";
-
-        demandList.hidden = false;
+        console.error("Demand loading error:", error);
+        demandList.hidden = true;
     }
 }
 
-
 // ======================================
-// LOAD ROUTE STOPS
+// LOAD STOPS
 // ======================================
 
 async function loadStops(routeId) {
-    populateDropdown(
-        boardingSelect,
-        [],
-        "Loading stops..."
-    );
-
-    populateDropdown(
-        destinationSelect,
-        [],
-        "Choose destination"
-    );
-
     try {
+        message.textContent = "Loading route stops...";
+
         const response = await fetch(
             `${API_BASE_URL}/routes/${routeId}/stops`,
             { cache: "no-store" }
@@ -241,10 +261,6 @@ async function loadStops(routeId) {
 
         const stops = await response.json();
 
-        if (String(routeSelect.value) !== String(routeId)) {
-            return;
-        }
-
         const selectedRoute = routes.find(function (route) {
             return String(route.routeId) === String(routeId);
         });
@@ -253,51 +269,31 @@ async function loadStops(routeId) {
             selectedRoute.stops = stops;
         }
 
-        const stopOptions = stops.map(function (stop) {
+        if (!Array.isArray(stops) || stops.length === 0) {
+            message.textContent = "No stops found for this route.";
+            populateDropdown(boardingSelect, [], "No stops available");
+            populateDropdown(destinationSelect, [], "No destination available");
+            return;
+        }
+
+        const boardingItems = stops.map(function (stop) {
             return {
-                value: String(stop.stopId),
+                value: stop.stopId,
                 label: stop.stopName
             };
         });
 
-        populateDropdown(
-            boardingSelect,
-            stopOptions,
-            "Choose boarding stop"
-        );
-
-        populateDropdown(
-            destinationSelect,
-            [],
-            "Choose destination"
-        );
-
-        message.textContent = "Stops loaded successfully.";
+        populateDropdown(boardingSelect, boardingItems, "Choose boarding stop");
+        populateDropdown(destinationSelect, [], "Choose destination");
+        message.textContent = "";
 
     } catch (error) {
         console.error("Stop loading error:", error);
-
-        if (String(routeSelect.value) !== String(routeId)) {
-            return;
-        }
-
-        populateDropdown(
-            boardingSelect,
-            [],
-            "Stops unavailable"
-        );
-
-        populateDropdown(
-            destinationSelect,
-            [],
-            "Stops unavailable"
-        );
-
-        message.textContent =
-            "Could not load stops from the backend.";
+        message.textContent = "Could not load stops for this route.";
+        populateDropdown(boardingSelect, [], "Could not load stops");
+        populateDropdown(destinationSelect, [], "Could not load destination");
     }
 }
-
 
 // ======================================
 // LOAD ALLOCATED BUSES
@@ -314,7 +310,7 @@ async function loadAllocatedBuses(routeId) {
         );
 
         if (!response.ok) {
-            throw new Error("Could not load bus details.");
+            throw new Error("Could not load allocated buses.");
         }
 
         const buses = await response.json();
@@ -329,78 +325,45 @@ async function loadAllocatedBuses(routeId) {
         busDetails.hidden = false;
 
         if (!Array.isArray(buses) || buses.length === 0) {
-            busCount.textContent =
-                "No buses available at the moment. Please wait...";
-
+            busCount.textContent = "No buses currently assigned to route.";
             busNumbers.textContent = "";
             return;
         }
 
-        busCount.textContent =
-            `${buses.length} bus(es) allocated`;
-
+        busCount.textContent = `${buses.length} bus(es) allocated`;
         busNumbers.textContent = buses.map(function (bus) {
-            return (
-                `Registration Number: ${bus.registrationNumber}\n` +
-                `Actual Capacity: ${bus.capacity}`
-            );
+            return `Registration Number: ${bus.registrationNumber}\nActual Capacity: ${bus.capacity}`;
         }).join("\n\n");
 
     } catch (error) {
         console.error("Bus loading error:", error);
-
-        if (
-            String(routeSelect.value) === String(routeId) &&
-            currentBusRouteId === String(routeId)
-        ) {
-            busDetails.hidden = false;
-
-            busCount.textContent =
-                "Unable to check bus availability. Please wait...";
-
-            busNumbers.textContent = "";
-        }
     }
 }
-
-
-// ======================================
-// AUTOMATIC BUS POLLING
-// ======================================
 
 function stopBusPolling() {
     if (busPollingTimer !== null) {
         clearTimeout(busPollingTimer);
         busPollingTimer = null;
     }
-
     currentBusRouteId = null;
 }
 
 function startBusPolling(routeId) {
     stopBusPolling();
-
     currentBusRouteId = String(routeId);
-
     busDetails.hidden = false;
     busCount.textContent = "Checking bus availability...";
     busNumbers.textContent = "";
 
     async function refreshBuses() {
-        if (currentBusRouteId !== String(routeId)) {
-            return;
-        }
-
+        if (currentBusRouteId !== String(routeId)) return;
         await loadAllocatedBuses(routeId);
-
         if (currentBusRouteId === String(routeId)) {
-            busPollingTimer = setTimeout(refreshBuses, 5000);
+            busPollingTimer = setTimeout(refreshBuses, 6000);
         }
     }
-
     refreshBuses();
 }
-
 
 // ======================================
 // ROUTE CHANGE EVENT
@@ -408,7 +371,7 @@ function startBusPolling(routeId) {
 
 routeSelect.addEventListener("change", async function () {
     message.textContent = "";
-
+    actionFeedback.textContent = "";
     confirmationCard.hidden = true;
     waitingCard.hidden = true;
 
@@ -416,25 +379,13 @@ routeSelect.addEventListener("change", async function () {
 
     if (!routeSelect.value) {
         stopBusPolling();
-
         routeDetails.hidden = true;
         busDetails.hidden = true;
-
         busCount.textContent = "";
         busNumbers.textContent = "";
-
-        populateDropdown(
-            boardingSelect,
-            [],
-            "Choose boarding stop"
-        );
-
-        populateDropdown(
-            destinationSelect,
-            [],
-            "Choose destination"
-        );
-
+        populateDropdown(tripSelect, [], "Choose a scheduled departure");
+        populateDropdown(boardingSelect, [], "Choose boarding stop");
+        populateDropdown(destinationSelect, [], "Choose destination");
         return;
     }
 
@@ -447,82 +398,51 @@ routeSelect.addEventListener("change", async function () {
         return;
     }
 
-    routeCode.textContent =
-        selectedRoute.routeCode ||
-        selectedRoute.routeName ||
-        "-";
-
-    routeOrigin.textContent =
-        selectedRoute.originName || "-";
-
-    routeDestination.textContent =
-        selectedRoute.destinationName || "-";
-
-    routeDuration.textContent =
-        selectedRoute.estimatedDurationMinutes
-            ? selectedRoute.estimatedDurationMinutes + " minutes"
-            : "Not available";
-
+    routeCode.textContent = selectedRoute.routeCode || selectedRoute.routeName || "-";
+    routeOrigin.textContent = selectedRoute.originName || "-";
+    routeDestination.textContent = selectedRoute.destinationName || "-";
+    routeDuration.textContent = selectedRoute.estimatedDurationMinutes
+        ? selectedRoute.estimatedDurationMinutes + " minutes"
+        : "Not available";
     routeDetails.hidden = false;
 
     startBusPolling(routeSelect.value);
-
+    await loadScheduledTrips(routeSelect.value);
     await loadStops(routeSelect.value);
 });
-
 
 // ======================================
 // BOARDING STOP CHANGE
 // ======================================
 
 boardingSelect.addEventListener("change", function () {
-    populateDropdown(
-        destinationSelect,
-        [],
-        "Choose destination"
-    );
+    populateDropdown(destinationSelect, [], "Choose destination");
 
-    if (!boardingSelect.value) {
-        return;
-    }
+    if (!boardingSelect.value || !routeSelect.value) return;
 
     const selectedRoute = routes.find(function (route) {
         return String(route.routeId) === routeSelect.value;
     });
 
-    if (
-        !selectedRoute ||
-        !Array.isArray(selectedRoute.stops)
-    ) {
-        return;
-    }
+    if (!selectedRoute || !Array.isArray(selectedRoute.stops)) return;
 
-    const boardingPosition = selectedRoute.stops.findIndex(
-        function (stop) {
-            return String(stop.stopId) === boardingSelect.value;
-        }
-    );
+    const boardingIndex = selectedRoute.stops.findIndex(function (stop) {
+        return String(stop.stopId) === boardingSelect.value;
+    });
 
-    if (boardingPosition < 0) {
-        return;
-    }
+    if (boardingIndex === -1) return;
 
     const laterStops = selectedRoute.stops
-        .slice(boardingPosition + 1)
+        .slice(boardingIndex + 1)
         .map(function (stop) {
             return {
-                value: String(stop.stopId),
+                value: stop.stopId,
                 label: stop.stopName
             };
         });
 
-    populateDropdown(
-        destinationSelect,
-        laterStops,
-        "Choose destination"
-    );
+    populateDropdown(destinationSelect, laterStops, "Choose destination");
 });
-
 
 // ======================================
 // CHECK JOURNEY STATUS
@@ -538,17 +458,12 @@ async function checkJourneyStatus(journeyId) {
             }
         );
 
-        if (!response.ok) {
-            throw new Error("Could not check journey status.");
-        }
+        if (!response.ok) throw new Error("Could not check journey status.");
 
         const journey = await response.json();
+        if (String(activeJourneyId) !== String(journeyId)) return;
 
-        if (String(activeJourneyId) !== String(journeyId)) {
-            return;
-        }
-
-        confirmStatus.textContent = journey.journeyStatus;
+        updateStatusBadge(journey.journeyStatus);
 
         if (journey.journeyStatus === "REGISTERED") {
             statusPollingTimer = setTimeout(function () {
@@ -561,31 +476,84 @@ async function checkJourneyStatus(journeyId) {
 
     } catch (error) {
         console.error("Could not check journey status:", error);
-
-        if (String(activeJourneyId) === String(journeyId)) {
-            statusPollingTimer = setTimeout(function () {
-                checkJourneyStatus(journeyId);
-            }, 4000);
-        }
     }
 }
 
-
-// ======================================
-// JOURNEY STATUS POLLING
-// ======================================
+function updateStatusBadge(status) {
+    confirmStatus.textContent = status;
+    if (status === "REGISTERED") {
+        confirmStatus.style.background = "#fef3c7";
+        confirmStatus.style.color = "#92400e";
+        boardJourneyBtn.disabled = false;
+        completeJourneyBtn.disabled = true;
+        cancelJourneyBtn.disabled = false;
+    } else if (status === "BOARDED") {
+        confirmStatus.style.background = "#dbeafe";
+        confirmStatus.style.color = "#1e40af";
+        boardJourneyBtn.disabled = true;
+        completeJourneyBtn.disabled = false;
+        cancelJourneyBtn.disabled = true;
+    } else if (status === "COMPLETED") {
+        confirmStatus.style.background = "#dcfce7";
+        confirmStatus.style.color = "#166534";
+        boardJourneyBtn.disabled = true;
+        completeJourneyBtn.disabled = true;
+        cancelJourneyBtn.disabled = true;
+    } else if (status === "CANCELLED") {
+        confirmStatus.style.background = "#fee2e2";
+        confirmStatus.style.color = "#991b1b";
+        boardJourneyBtn.disabled = true;
+        completeJourneyBtn.disabled = true;
+        cancelJourneyBtn.disabled = true;
+    }
+}
 
 function startStatusPolling(journeyId) {
     if (statusPollingTimer !== null) {
         clearTimeout(statusPollingTimer);
     }
-
     activeJourneyId = String(journeyId);
     statusPollingTimer = null;
-
     checkJourneyStatus(journeyId);
 }
 
+// ======================================
+// JOURNEY ACTION BUTTONS (BOARD / COMPLETE / CANCEL)
+// ======================================
+
+async function updateJourneyAction(newStatus) {
+    if (!confirmJourneyId.textContent || confirmJourneyId.textContent === "-") return;
+    const jId = confirmJourneyId.textContent;
+
+    actionFeedback.textContent = `Updating journey status to ${newStatus}...`;
+    try {
+        const resp = await fetch(`${API_BASE_URL}/passenger-journeys/${jId}/status`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: newStatus })
+        });
+        const res = await resp.json();
+        if (!resp.ok) {
+            throw new Error(res.message || "Failed to update status.");
+        }
+        updateStatusBadge(newStatus);
+        actionFeedback.textContent = `Status successfully updated: ${newStatus}`;
+        if (newStatus === "CANCELLED" || newStatus === "COMPLETED") {
+            if (statusPollingTimer !== null) {
+                clearTimeout(statusPollingTimer);
+                statusPollingTimer = null;
+            }
+            activeJourneyId = null;
+        }
+        await loadPassengerDemand();
+    } catch (e) {
+        actionFeedback.textContent = e.message || "Status update failed.";
+    }
+}
+
+boardJourneyBtn.addEventListener("click", () => updateJourneyAction("BOARDED"));
+completeJourneyBtn.addEventListener("click", () => updateJourneyAction("COMPLETED"));
+cancelJourneyBtn.addEventListener("click", () => updateJourneyAction("CANCELLED"));
 
 // ======================================
 // JOURNEY FORM SUBMISSION
@@ -594,25 +562,15 @@ function startStatusPolling(journeyId) {
 journeyForm.addEventListener("submit", async function (event) {
     event.preventDefault();
 
-    const submitButton = journeyForm.querySelector(
-        'button[type="submit"]'
-    );
-
-    if (submitButton.disabled) {
-        return;
-    }
+    const submitButton = journeyForm.querySelector('button[type="submit"]');
+    if (submitButton.disabled) return;
 
     confirmationCard.hidden = true;
     waitingCard.hidden = true;
+    actionFeedback.textContent = "";
 
-    if (
-        !routeSelect.value ||
-        !boardingSelect.value ||
-        !destinationSelect.value
-    ) {
-        message.textContent =
-            "Please select a route, boarding stop and destination.";
-
+    if (!routeSelect.value || !boardingSelect.value || !destinationSelect.value) {
+        message.textContent = "Please select a route, boarding stop and destination.";
         return;
     }
 
@@ -620,33 +578,21 @@ journeyForm.addEventListener("submit", async function (event) {
         return String(route.routeId) === routeSelect.value;
     });
 
-    if (
-        !selectedRoute ||
-        !Array.isArray(selectedRoute.stops)
-    ) {
+    if (!selectedRoute || !Array.isArray(selectedRoute.stops)) {
         message.textContent = "Please select a valid route.";
         return;
     }
 
-    const boardingIndex = selectedRoute.stops.findIndex(
-        function (stop) {
-            return String(stop.stopId) === boardingSelect.value;
-        }
-    );
+    const boardingIndex = selectedRoute.stops.findIndex(function (stop) {
+        return String(stop.stopId) === boardingSelect.value;
+    });
 
-    const destinationIndex = selectedRoute.stops.findIndex(
-        function (stop) {
-            return String(stop.stopId) === destinationSelect.value;
-        }
-    );
+    const destinationIndex = selectedRoute.stops.findIndex(function (stop) {
+        return String(stop.stopId) === destinationSelect.value;
+    });
 
-    if (
-        boardingIndex < 0 ||
-        destinationIndex <= boardingIndex
-    ) {
-        message.textContent =
-            "Choose a destination after your boarding stop.";
-
+    if (boardingIndex < 0 || destinationIndex <= boardingIndex) {
+        message.textContent = "Choose a destination after your boarding stop.";
         return;
     }
 
@@ -657,15 +603,13 @@ journeyForm.addEventListener("submit", async function (event) {
         passengerCount: passengerCount
     };
 
-    const boardingName =
-        boardingSelect.options[
-            boardingSelect.selectedIndex
-        ].textContent;
+    if (tripSelect.value) {
+        journeyData.tripId = Number(tripSelect.value);
+    }
 
-    const destinationName =
-        destinationSelect.options[
-            destinationSelect.selectedIndex
-        ].textContent;
+    const boardingName = boardingSelect.options[boardingSelect.selectedIndex].textContent;
+    const destinationName = destinationSelect.options[destinationSelect.selectedIndex].textContent;
+    const tripName = tripSelect.selectedIndex > 0 ? tripSelect.options[tripSelect.selectedIndex].textContent : "Earliest Available";
 
     submitButton.disabled = true;
     submitButton.textContent = "Submitting...";
@@ -673,66 +617,80 @@ journeyForm.addEventListener("submit", async function (event) {
     try {
         message.textContent = "Submitting your journey...";
 
-        const response = await fetch(
-            `${API_BASE_URL}/passenger-journeys`,
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(journeyData)
-            }
-        );
+        const response = await fetch(`${API_BASE_URL}/passenger-journeys`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(journeyData)
+        });
 
         const result = await response.json();
 
         if (!response.ok) {
-            throw new Error(
-                result.message || "Journey submission failed."
-            );
+            throw new Error(result.message || "Journey submission failed.");
         }
 
-        message.textContent =
-            `Journey registered successfully! Journey ID: ${result.journeyId}. Status: ${result.journeyStatus}.`;
+        message.textContent = `Journey registered successfully! Journey ID: ${result.journeyId}.`;
 
         confirmJourneyId.textContent = result.journeyId;
-
-        confirmRoute.textContent =
-            `${selectedRoute.routeCode} - ${selectedRoute.routeName}`;
-
+        confirmRoute.textContent = `${selectedRoute.routeCode || selectedRoute.routeName} - ${selectedRoute.originName} → ${selectedRoute.destinationName}`;
+        confirmTrip.textContent = tripName;
         confirmBoarding.textContent = boardingName;
         confirmDestination.textContent = destinationName;
         confirmPassengers.textContent = passengerCount;
-        confirmStatus.textContent = result.journeyStatus;
+        updateStatusBadge(result.journeyStatus || "REGISTERED");
 
         waitingCard.hidden = true;
         confirmationCard.hidden = false;
 
-        await loadPassengerDemand();
+        // Reset and clear booking form for clean UX
+        resetBookingForm();
 
+        await loadPassengerDemand();
         startStatusPolling(result.journeyId);
 
     } catch (error) {
         console.error("Journey submission error:", error);
-
         message.textContent = "";
-
-        if (
-            error.message ===
-            "No buses available at the moment. Please wait..."
-        ) {
+        if (error.message === "No buses available at the moment. Please wait...") {
             waitingCard.hidden = false;
         } else {
-            message.textContent =
-                error.message || "Could not submit your journey.";
+            message.textContent = error.message || "Could not submit your journey.";
         }
-
     } finally {
         submitButton.disabled = false;
         submitButton.textContent = "Confirm Journey";
     }
 });
 
+// ======================================
+// FORM CLEARANCE & RESET HELPER
+// ======================================
+
+function resetBookingForm() {
+    journeyForm.reset();
+    routeSelect.value = "";
+    populateDropdown(tripSelect, [], "Choose a scheduled departure");
+    populateDropdown(boardingSelect, [], "Choose boarding stop");
+    populateDropdown(destinationSelect, [], "Choose destination");
+    routeDetails.hidden = true;
+    busDetails.hidden = true;
+    busCount.textContent = "";
+    busNumbers.textContent = "";
+    passengerCount = 1;
+    updatePassengerCount();
+    stopBusPolling();
+}
+
+const newBookingBtn = document.getElementById("newBookingBtn");
+if (newBookingBtn) {
+    newBookingBtn.addEventListener("click", function () {
+        confirmationCard.hidden = true;
+        waitingCard.hidden = true;
+        message.textContent = "";
+        actionFeedback.textContent = "";
+        resetBookingForm();
+    });
+}
 
 // ======================================
 // INITIAL PAGE LOAD

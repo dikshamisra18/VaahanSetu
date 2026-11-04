@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vaahansetu-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=default
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://ep-rough-mode-azjj7ke6.c-3.ap-southeast-1.aws.neon.tech/vaahansetu?sslmode=require&options=-c%20timezone=UTC
+      - SPRING_DATASOURCE_USERNAME=neondb_owner
+      - SPRING_DATASOURCE_PASSWORD=npg_7lYrOFQjLhg6
+      - SPRING_DATASOURCE_HIKARI_MAX_LIFETIME=60000
+      - SPRING_DATASOURCE_HIKARI_KEEPALIVE_TIME=30000
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vaahansetu-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

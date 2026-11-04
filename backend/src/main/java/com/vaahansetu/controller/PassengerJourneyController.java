@@ -1,6 +1,6 @@
-
 package com.vaahansetu.controller;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -18,14 +18,13 @@ import org.springframework.web.bind.annotation.RestController;
 import com.vaahansetu.repository.JourneyRepository;
 
 @RestController
-@RequestMapping("/api/passenger-journeys")
+@RequestMapping({"/api/passenger-journeys", "/api/passenger/journeys"})
 @CrossOrigin(origins = "*")
 public class PassengerJourneyController {
 
     private final JourneyRepository journeyRepository;
 
-    public PassengerJourneyController(
-            JourneyRepository journeyRepository) {
+    public PassengerJourneyController(JourneyRepository journeyRepository) {
         this.journeyRepository = journeyRepository;
     }
 
@@ -42,12 +41,10 @@ public class PassengerJourneyController {
         }
 
         Long routeId = toLong(request.get("routeId"));
-        Long boardingStopId =
-                toLong(request.get("boardingStopId"));
-        Long destinationStopId =
-                toLong(request.get("destinationStopId"));
-        Integer passengerCount =
-                toInteger(request.get("passengerCount"));
+        Long boardingStopId = toLong(request.get("boardingStopId"));
+        Long destinationStopId = toLong(request.get("destinationStopId"));
+        Integer passengerCount = toInteger(request.get("passengerCount"));
+        Long requestedTripId = toLong(request.get("tripId"));
 
         // Validate required fields
         if (routeId == null
@@ -70,14 +67,10 @@ public class PassengerJourneyController {
         }
 
         // Validate route stops and their order
-        List<Long> stopOrder =
-                journeyRepository.findStopOrder(routeId);
+        List<Long> stopOrder = journeyRepository.findStopOrder(routeId);
 
-        int boardingIndex =
-                stopOrder.indexOf(boardingStopId);
-
-        int destinationIndex =
-                stopOrder.indexOf(destinationStopId);
+        int boardingIndex = stopOrder.indexOf(boardingStopId);
+        int destinationIndex = stopOrder.indexOf(destinationStopId);
 
         if (boardingIndex == -1 || destinationIndex == -1) {
             return error(
@@ -93,19 +86,18 @@ public class PassengerJourneyController {
             );
         }
 
-        // Find today's trips with active bus allocations
-        List<Map<String, Object>> trips =
-                journeyRepository.findTodaysTrips(routeId);
-
-        if (trips.isEmpty()) {
-            return error(
-                    HttpStatus.CONFLICT,
-                    "No buses available at the moment. Please wait..."
-            );
+        Long tripId = requestedTripId;
+        if (tripId == null) {
+            // Find today's trips with active bus allocations
+            List<Map<String, Object>> trips = journeyRepository.findTodaysTrips(routeId);
+            if (trips.isEmpty()) {
+                return error(
+                        HttpStatus.CONFLICT,
+                        "No buses available at the moment. Please wait..."
+                );
+            }
+            tripId = toLong(trips.get(0).get("tripId"));
         }
-
-        // Use the first eligible scheduled trip
-        Long tripId = toLong(trips.get(0).get("tripId"));
 
         if (tripId == null) {
             return error(
@@ -115,13 +107,19 @@ public class PassengerJourneyController {
         }
 
         // Find the active planning session
-        Long sessionId =
-                journeyRepository.findActiveSessionId();
-
+        Long sessionId = journeyRepository.findActiveSessionId();
         if (sessionId == null) {
             return error(
                     HttpStatus.CONFLICT,
                     "No active planning session is available at the moment."
+            );
+        }
+
+        // Duplicate submission prevention within 2-minute window (SRS F9, NFR-S7)
+        if (journeyRepository.isDuplicateJourney(sessionId, tripId, boardingStopId, destinationStopId, passengerCount)) {
+            return error(
+                    HttpStatus.CONFLICT,
+                    "Duplicate journey submission detected within the last 2 minutes. Please wait before submitting again."
             );
         }
 
@@ -134,16 +132,15 @@ public class PassengerJourneyController {
                 passengerCount
         );
 
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(
-                Map.of(
-                        "message",
-                        "Your journey has been registered successfully.",
-                        "journeyId",
-                        journeyId,
-                        "journeyStatus",
-                        "REGISTERED"
-                )
-        );
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("message", "Your journey has been registered successfully.");
+        resp.put("journeyId", journeyId);
+        resp.put("tripId", tripId);
+        resp.put("journeyStatus", "REGISTERED");
+        resp.put("status", "CONFIRMED");
+        resp.put("passengerCount", passengerCount);
+
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(resp);
     }
 
     // Get journey details by ID
@@ -151,9 +148,7 @@ public class PassengerJourneyController {
     public ResponseEntity<Map<String, Object>> getJourney(
             @PathVariable Long journeyId) {
 
-        Map<String, Object> journey =
-                journeyRepository.findJourneyById(journeyId);
-
+        Map<String, Object> journey = journeyRepository.findJourneyById(journeyId);
         if (journey == null) {
             return error(
                     HttpStatus.NOT_FOUND,
@@ -168,16 +163,12 @@ public class PassengerJourneyController {
     @GetMapping("/demand")
     public ResponseEntity<List<Map<String, Object>>> getPassengerDemand() {
 
-        Long sessionId =
-                journeyRepository.findActiveSessionId();
-
+        Long sessionId = journeyRepository.findActiveSessionId();
         if (sessionId == null) {
             return ResponseEntity.ok(List.of());
         }
 
-        List<Map<String, Object>> demand =
-                journeyRepository.findPassengerDemand(sessionId);
-
+        List<Map<String, Object>> demand = journeyRepository.findPassengerDemand(sessionId);
         return ResponseEntity.ok(demand);
     }
 
@@ -213,9 +204,7 @@ public class PassengerJourneyController {
             );
         }
 
-        Map<String, Object> existingJourney =
-                journeyRepository.findJourneyById(journeyId);
-
+        Map<String, Object> existingJourney = journeyRepository.findJourneyById(journeyId);
         if (existingJourney == null) {
             return error(
                     HttpStatus.NOT_FOUND,
@@ -223,12 +212,7 @@ public class PassengerJourneyController {
             );
         }
 
-        int updatedRows =
-                journeyRepository.updateJourneyStatus(
-                        journeyId,
-                        status
-                );
-
+        int updatedRows = journeyRepository.updateJourneyStatus(journeyId, status);
         if (updatedRows == 0) {
             return error(
                     HttpStatus.NOT_FOUND,
@@ -236,25 +220,22 @@ public class PassengerJourneyController {
             );
         }
 
-        return ResponseEntity.ok(
-                Map.of(
-                        "message",
-                        "Journey status updated successfully.",
-                        "journeyId",
-                        journeyId,
-                        "journeyStatus",
-                        status
-                )
-        );
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("message", "Journey status updated successfully.");
+        resp.put("journeyId", journeyId);
+        resp.put("journeyStatus", status);
+        resp.put("status", status);
+        resp.put("boardingConfirmedAt", java.time.Instant.now().toString());
+        resp.put("alightingConfirmedAt", java.time.Instant.now().toString());
+
+        return ResponseEntity.ok(resp);
     }
 
     // Safely convert a value to Long
     private Long toLong(Object value) {
-
         if (value == null) {
             return null;
         }
-
         try {
             return Long.valueOf(value.toString());
         } catch (NumberFormatException exception) {
@@ -264,11 +245,9 @@ public class PassengerJourneyController {
 
     // Safely convert a value to Integer
     private Integer toInteger(Object value) {
-
         if (value == null) {
             return null;
         }
-
         try {
             return Integer.valueOf(value.toString());
         } catch (NumberFormatException exception) {
@@ -280,7 +259,6 @@ public class PassengerJourneyController {
     private ResponseEntity<Map<String, Object>> error(
             HttpStatus status,
             String message) {
-
         return ResponseEntity.status(status).body(
                 Map.of("message", message)
         );

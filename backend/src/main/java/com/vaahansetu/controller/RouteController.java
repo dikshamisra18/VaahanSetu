@@ -1,4 +1,3 @@
-
 package com.vaahansetu.controller;
 
 import java.util.List;
@@ -10,6 +9,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.vaahansetu.repository.JourneyRepository;
 import com.vaahansetu.repository.RouteRepository;
 
 @RestController
@@ -18,9 +18,11 @@ import com.vaahansetu.repository.RouteRepository;
 public class RouteController {
 
     private final RouteRepository routeRepository;
+    private final JourneyRepository journeyRepository;
 
-    public RouteController(RouteRepository routeRepository) {
+    public RouteController(RouteRepository routeRepository, JourneyRepository journeyRepository) {
         this.routeRepository = routeRepository;
+        this.journeyRepository = journeyRepository;
     }
 
     // Get all active routes
@@ -33,7 +35,6 @@ public class RouteController {
     @GetMapping("/routes/{routeId}/stops")
     public List<Map<String, Object>> getStops(
             @PathVariable Long routeId) {
-
         return routeRepository.findStopsByRouteId(routeId);
     }
 
@@ -41,7 +42,13 @@ public class RouteController {
     @GetMapping("/routes/{routeId}/buses")
     public List<Map<String, Object>> getAllocatedBuses(
             @PathVariable Long routeId) {
-
         return routeRepository.findAllocatedBuses(routeId);
+    }
+
+    // Get today's scheduled trips for a route
+    @GetMapping("/routes/{routeId}/trips")
+    public List<Map<String, Object>> getRouteTrips(
+            @PathVariable Long routeId) {
+        return journeyRepository.findTripsForRoute(routeId);
     }
 }
