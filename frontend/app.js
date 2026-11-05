@@ -656,7 +656,10 @@ journeyForm.addEventListener("submit", async function (event) {
     try {
         message.textContent = "Submitting your journey...";
 
-        const response = await fetch(`${API_BASE_URL}/passenger-journeys`, {
+        // Pass autoAllocate=true so the backend re-runs the allocation engine
+        // after saving the journey. The response will include the latest
+        // proposed bus assignment + an allocation summary.
+        const response = await fetch(`${API_BASE_URL}/passenger-journeys?autoAllocate=true`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(journeyData)
@@ -671,12 +674,33 @@ journeyForm.addEventListener("submit", async function (event) {
         message.textContent = `Journey registered successfully! Journey ID: ${result.journeyId}.`;
 
         confirmJourneyId.textContent = result.journeyId;
-        confirmRoute.textContent = `${selectedRoute.routeCode || selectedRoute.routeName} - ${selectedRoute.originName} → ${selectedRoute.destinationName}`;
-        confirmTrip.textContent = tripName;
-        confirmBoarding.textContent = boardingName;
-        confirmDestination.textContent = destinationName;
+        confirmRoute.textContent = `${result.routeCode || selectedRoute.routeCode || selectedRoute.routeName} - ${result.originName || selectedRoute.originName} → ${result.destinationName || selectedRoute.destinationName}`;
+        // Show the actual scheduled departure + assigned bus in the trip line
+        const depTime = result.departureTime ? `Departure ${result.departureTime}` : tripName;
+        const arrTime = result.arrivalTime ? ` - Arrival ${result.arrivalTime}` : "";
+        const busInfo = result.busRegistrationNumber && result.busRegistrationNumber !== "UNASSIGNED"
+            ? ` [Bus: ${result.busRegistrationNumber} (${result.busCapacity} seats)]`
+            : " [Pending allocation]";
+        confirmTrip.textContent = `${depTime}${arrTime}${busInfo}`;
+        confirmBoarding.textContent = result.boardingStopName || boardingName;
+        confirmDestination.textContent = result.destinationStopName || destinationName;
         confirmPassengers.textContent = passengerCount;
         updateStatusBadge(result.journeyStatus || "REGISTERED");
+
+        // Show auto-allocation result if present
+        if (result.autoAllocation && !result.autoAllocation.error) {
+            const alloc = result.autoAllocation;
+            const allocMsg = document.createElement("p");
+            allocMsg.style.fontSize = "13px";
+            allocMsg.style.color = "#64748b";
+            allocMsg.style.marginTop = "8px";
+            allocMsg.innerHTML = `<em>Allocation refreshed: ${alloc.busesAssigned} buses assigned, ${alloc.proposedUnmetDemand} unmet passengers (was ${alloc.baselineUnmetDemand}).</em>`;
+            // Append to confirmation card if not already there
+            const existingAlloc = confirmationCard.querySelector(".alloc-summary");
+            if (existingAlloc) existingAlloc.remove();
+            allocMsg.className = "alloc-summary";
+            confirmationCard.appendChild(allocMsg);
+        }
 
         waitingCard.hidden = true;
         confirmationCard.hidden = false;

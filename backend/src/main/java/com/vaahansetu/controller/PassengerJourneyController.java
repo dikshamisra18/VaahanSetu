@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.vaahansetu.repository.JourneyRepository;
+import com.vaahansetu.service.OfficerService;
 
 @RestController
 @RequestMapping({"/api/passenger-journeys", "/api/passenger/journeys"})
@@ -26,15 +27,19 @@ import com.vaahansetu.repository.JourneyRepository;
 public class PassengerJourneyController {
 
     private final JourneyRepository journeyRepository;
+    private final OfficerService officerService;
 
-    public PassengerJourneyController(JourneyRepository journeyRepository) {
+    public PassengerJourneyController(JourneyRepository journeyRepository,
+                                      OfficerService officerService) {
         this.journeyRepository = journeyRepository;
+        this.officerService = officerService;
     }
 
     // Register a passenger journey
     @PostMapping
     public ResponseEntity<Map<String, Object>> registerJourney(
-            @RequestBody Map<String, Object> request) {
+            @RequestBody Map<String, Object> request,
+            @RequestParam(defaultValue = "false") boolean autoAllocate) {
 
         if (request == null) {
             return error(
@@ -166,6 +171,44 @@ public class PassengerJourneyController {
             resp.put("arrivalTime", journeyDetails.get("arrivalTimeFormatted"));
             resp.put("estimatedDurationMinutes", journeyDetails.get("estimatedDurationMinutes"));
             resp.put("passengerReference", journeyDetails.get("passengerReference"));
+        }
+
+        // Optional auto-allocation: when the frontend passes ?autoAllocate=true,
+        // re-run the allocation engine after the journey is registered so the
+        // proposed bus assignments reflect the new demand. The latest allocation
+        // run is included in the response so the passenger UI can show whether
+        // the bus assignment changed.
+        //
+        // This is "a little automated" per the user's request -- not a full
+        // background job, but on-demand refresh triggered by passenger activity.
+        // Officers can still manually trigger allocation via POST /api/officer/allocations.
+        if (autoAllocate) {
+            try {
+                Map<String, Object> allocResult = officerService.runAllocation(
+                        java.time.LocalDateTime.now());
+                Map<String, Object> allocSummary = new LinkedHashMap<>();
+                allocSummary.put("allocationRunId", allocResult.get("proposedRunId"));
+                allocSummary.put("baselineUnmetDemand", allocResult.get("baselineUnmetDemand"));
+                allocSummary.put("proposedUnmetDemand", allocResult.get("proposedUnmetDemand"));
+                allocSummary.put("busesAssigned", allocResult.get("busesAssigned"));
+                allocSummary.put("busesLeftUnassigned", allocResult.get("busesLeftUnassigned"));
+                resp.put("autoAllocation", allocSummary);
+                // Refresh bus details after allocation (the bus may have changed)
+                Map<String, Object> refreshed = journeyRepository.findJourneyWithDetailsById(journeyId);
+                if (refreshed != null) {
+                    resp.put("busId", refreshed.get("busId"));
+                    resp.put("busRegistrationNumber", refreshed.get("busRegistrationNumber"));
+                    resp.put("busCapacity", refreshed.get("busCapacity"));
+                    resp.put("busCurrentLocation", refreshed.get("busCurrentLocation"));
+                    resp.put("busStatus", refreshed.get("busStatus"));
+                }
+            } catch (Exception ex) {
+                // Auto-allocation is best-effort; don't fail the journey registration
+                Map<String, Object> allocSummary = new LinkedHashMap<>();
+                allocSummary.put("error", ex.getMessage());
+                allocSummary.put("note", "Journey registered, but auto-allocation refresh failed. An officer can run allocation manually.");
+                resp.put("autoAllocation", allocSummary);
+            }
         }
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(resp);
