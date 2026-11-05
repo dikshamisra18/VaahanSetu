@@ -50,12 +50,22 @@ public class RouteController {
         return routeRepository.findAllocatedBuses(routeId, date);
     }
 
-    // Get scheduled trips for a route
+    // Get scheduled trips for a route (today + future, for booking)
     @GetMapping("/routes/{routeId}/trips")
     public List<Map<String, Object>> getRouteTrips(
             @PathVariable Long routeId,
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         return journeyRepository.findTripsForRoute(routeId, date);
+    }
+
+    // Get past trips for a route (history view for the passenger UI)
+    // Returns up to 10 most recent past departures, useful for showing
+    // "recent departures on this route" alongside today's schedule.
+    @GetMapping("/routes/{routeId}/trips/history")
+    public List<Map<String, Object>> getRouteTripHistory(
+            @PathVariable Long routeId,
+            @RequestParam(defaultValue = "10") int limit) {
+        return journeyRepository.findPastTripsForRoute(routeId, Math.max(1, Math.min(limit, 50)));
     }
 }

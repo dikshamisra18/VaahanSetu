@@ -22,6 +22,9 @@ public class JourneyRepository {
     }
 
     public List<Map<String, Object>> findTodaysTrips(Long routeId, LocalDate serviceDate) {
+        // Date resolution: explicit param > CURRENT_DATE > latest future trip date > latest trip date.
+        // We no longer fall back to planning_sessions.started_at::date because that goes stale
+        // when "today" moves past the session start.
         String sql = """
                 SELECT DISTINCT
                        st.trip_id AS "tripId",
@@ -42,10 +45,10 @@ public class JourneyRepository {
                     ON b.bus_id = ta.bus_id
                 WHERE st.route_id = ?
                   AND st.service_date = COALESCE(?,
-                        (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                        CURRENT_DATE,
+                        (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ? AND service_date >= CURRENT_DATE),
                         (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ?),
-                        (SELECT MAX(service_date) FROM scheduled_trips),
-                        CURRENT_DATE)
+                        (SELECT MAX(service_date) FROM scheduled_trips))
                   AND ta.status = 'ACTIVE'
                   AND st.status = 'SCHEDULED'
                   AND b.status = 'ACTIVE'
@@ -56,16 +59,28 @@ public class JourneyRepository {
                 sql,
                 routeId,
                 serviceDate,
+                routeId,
                 routeId
         );
     }
 
-    // Find all trips for a route today (whether bus is allocated yet or not)
+    // Find all trips for a route on a specific date (or today if no date given).
+    // Returns trips that are SCHEDULED (future departures) so passengers can book.
+    // Use findPastTripsForRoute() for historical/completed trips.
     public List<Map<String, Object>> findTripsForRoute(Long routeId) {
         return findTripsForRoute(routeId, null);
     }
 
     public List<Map<String, Object>> findTripsForRoute(Long routeId, LocalDate serviceDate) {
+        // Date resolution priority (in order):
+        //   1. Explicit serviceDate parameter (passenger picked a date in the UI)
+        //   2. CURRENT_DATE (today -- always preferred over stale session dates)
+        //   3. Latest service_date in scheduled_trips for this route (fallback if no trips today)
+        //   4. Latest service_date across all trips (last resort)
+        //
+        // NOTE: we no longer use planning_sessions.started_at::date as a tiebreaker because
+        // it goes stale when "today" moves past the session's started_at. CURRENT_DATE is
+        // always correct.
         String sql = """
                 SELECT st.trip_id AS "tripId",
                        st.route_id AS "routeId",
@@ -77,7 +92,12 @@ public class JourneyRepository {
                        st.status,
                        ta.bus_id AS "busId",
                        COALESCE(b.registration_number, 'UNASSIGNED') AS "registrationNumber",
-                       COALESCE(b.capacity, 0) AS "capacity"
+                       COALESCE(b.capacity, 0) AS "capacity",
+                       CASE
+                           WHEN st.service_date = CURRENT_DATE THEN 'TODAY'
+                           WHEN st.service_date > CURRENT_DATE THEN 'FUTURE'
+                           ELSE 'PAST'
+                       END AS "dateCategory"
                 FROM scheduled_trips st
                 LEFT JOIN trip_assignments ta
                     ON ta.trip_id = st.trip_id AND ta.status = 'ACTIVE'
@@ -85,11 +105,11 @@ public class JourneyRepository {
                     ON b.bus_id = ta.bus_id
                 WHERE st.route_id = ?
                   AND st.service_date = COALESCE(?,
-                        (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                        CURRENT_DATE,
+                        (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ? AND service_date >= CURRENT_DATE),
                         (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ?),
-                        (SELECT MAX(service_date) FROM scheduled_trips),
-                        CURRENT_DATE)
-                  AND st.status = 'SCHEDULED'
+                        (SELECT MAX(service_date) FROM scheduled_trips))
+                  AND st.status IN ('SCHEDULED', 'IN_PROGRESS', 'COMPLETED')
                 ORDER BY st.departure_time
                 """;
 
@@ -97,8 +117,42 @@ public class JourneyRepository {
                 sql,
                 routeId,
                 serviceDate,
+                routeId,
                 routeId
         );
+    }
+
+    /**
+     * Find past trips for a route (history view).
+     * Returns up to {@code limit} most recent past trips, including COMPLETED and CANCELLED ones.
+     * Useful for the passenger UI to show "recent departures on this route" history.
+     */
+    public List<Map<String, Object>> findPastTripsForRoute(Long routeId, int limit) {
+        String sql = """
+                SELECT st.trip_id AS "tripId",
+                       st.route_id AS "routeId",
+                       st.service_date AS "serviceDate",
+                       TO_CHAR(st.departure_time, 'HH24:MI') AS "departureTimeFormatted",
+                       TO_CHAR(st.expected_arrival_time, 'HH24:MI') AS "arrivalTimeFormatted",
+                       st.departure_time AS "departureTime",
+                       st.expected_arrival_time AS "expectedArrivalTime",
+                       st.status,
+                       ta.bus_id AS "busId",
+                       COALESCE(b.registration_number, 'UNASSIGNED') AS "registrationNumber",
+                       COALESCE(b.capacity, 0) AS "capacity",
+                       'PAST' AS "dateCategory"
+                FROM scheduled_trips st
+                LEFT JOIN trip_assignments ta
+                    ON ta.trip_id = st.trip_id AND ta.status = 'ACTIVE'
+                LEFT JOIN buses b
+                    ON b.bus_id = ta.bus_id
+                WHERE st.route_id = ?
+                  AND st.service_date < CURRENT_DATE
+                ORDER BY st.service_date DESC, st.departure_time DESC
+                LIMIT ?
+                """;
+
+        return jdbcTemplate.queryForList(sql, routeId, limit);
     }
 
     // Find the currently active planning session
@@ -227,6 +281,56 @@ public class JourneyRepository {
         List<Map<String, Object>> results =
                 jdbcTemplate.queryForList(sql, journeyId);
 
+        return results.isEmpty() ? null : results.get(0);
+    }
+
+    /**
+     * Full journey details including route, trip, boarding/destination stop names,
+     * and the assigned bus (registration, capacity, depot, status).
+     * Used in the passenger UI's "journey registered successfully" confirmation card.
+     */
+    public Map<String, Object> findJourneyWithDetailsById(Long journeyId) {
+        String sql = """
+                SELECT pj.journey_id AS "journeyId",
+                       pj.session_id AS "sessionId",
+                       pj.trip_id AS "tripId",
+                       st.route_id AS "routeId",
+                       r.route_code AS "routeCode",
+                       r.route_name AS "routeName",
+                       r.origin_name AS "originName",
+                       r.destination_name AS "destinationName",
+                       r.estimated_duration_minutes AS "estimatedDurationMinutes",
+                       pj.boarding_stop_id AS "boardingStopId",
+                       bs.stop_name AS "boardingStopName",
+                       pj.destination_stop_id AS "destinationStopId",
+                       ds.stop_name AS "destinationStopName",
+                       pj.passenger_count AS "passengerCount",
+                       pj.journey_status AS "journeyStatus",
+                       pj.boarding_confirmed_at AS "boardingConfirmedAt",
+                       pj.alighting_confirmed_at AS "alightingConfirmedAt",
+                       pj.submitted_at AS "submittedAt",
+                       pj.passenger_reference AS "passengerReference",
+                       st.service_date AS "serviceDate",
+                       TO_CHAR(st.departure_time, 'HH24:MI') AS "departureTimeFormatted",
+                       TO_CHAR(st.expected_arrival_time, 'HH24:MI') AS "arrivalTimeFormatted",
+                       st.status AS "tripStatus",
+                       ta.bus_id AS "busId",
+                       COALESCE(b.registration_number, 'UNASSIGNED') AS "busRegistrationNumber",
+                       COALESCE(b.capacity, 0) AS "busCapacity",
+                       COALESCE(b.current_location, 'Unknown') AS "busCurrentLocation",
+                       COALESCE(b.status, 'UNKNOWN') AS "busStatus",
+                       COALESCE(b.rest_duration_minutes, 0) AS "busRestDurationMinutes"
+                FROM passenger_journeys pj
+                JOIN scheduled_trips st ON st.trip_id = pj.trip_id
+                JOIN routes r ON r.route_id = st.route_id
+                JOIN stops bs ON bs.stop_id = pj.boarding_stop_id
+                JOIN stops ds ON ds.stop_id = pj.destination_stop_id
+                LEFT JOIN trip_assignments ta ON ta.trip_id = pj.trip_id AND ta.status = 'ACTIVE'
+                LEFT JOIN buses b ON b.bus_id = ta.bus_id
+                WHERE pj.journey_id = ?
+                """;
+
+        List<Map<String, Object>> results = jdbcTemplate.queryForList(sql, journeyId);
         return results.isEmpty() ? null : results.get(0);
     }
 

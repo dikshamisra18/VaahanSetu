@@ -135,6 +135,11 @@ public class PassengerJourneyController {
                 passengerCount
         );
 
+        // Build a rich response that includes the journey ID + the assigned bus
+        // details + the trip schedule, so the passenger UI can show a complete
+        // "Journey Registered" confirmation card without an extra round-trip.
+        Map<String, Object> journeyDetails = journeyRepository.findJourneyWithDetailsById(journeyId);
+
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("message", "Your journey has been registered successfully.");
         resp.put("journeyId", journeyId);
@@ -142,6 +147,26 @@ public class PassengerJourneyController {
         resp.put("journeyStatus", "REGISTERED");
         resp.put("status", "CONFIRMED");
         resp.put("passengerCount", passengerCount);
+        if (journeyDetails != null) {
+            // Bus details (so the passenger can see which bus to look for)
+            resp.put("busId", journeyDetails.get("busId"));
+            resp.put("busRegistrationNumber", journeyDetails.get("busRegistrationNumber"));
+            resp.put("busCapacity", journeyDetails.get("busCapacity"));
+            resp.put("busCurrentLocation", journeyDetails.get("busCurrentLocation"));
+            resp.put("busStatus", journeyDetails.get("busStatus"));
+            // Trip schedule (so the passenger knows when to be at the stop)
+            resp.put("routeCode", journeyDetails.get("routeCode"));
+            resp.put("routeName", journeyDetails.get("routeName"));
+            resp.put("originName", journeyDetails.get("originName"));
+            resp.put("destinationName", journeyDetails.get("destinationName"));
+            resp.put("boardingStopName", journeyDetails.get("boardingStopName"));
+            resp.put("destinationStopName", journeyDetails.get("destinationStopName"));
+            resp.put("serviceDate", journeyDetails.get("serviceDate"));
+            resp.put("departureTime", journeyDetails.get("departureTimeFormatted"));
+            resp.put("arrivalTime", journeyDetails.get("arrivalTimeFormatted"));
+            resp.put("estimatedDurationMinutes", journeyDetails.get("estimatedDurationMinutes"));
+            resp.put("passengerReference", journeyDetails.get("passengerReference"));
+        }
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(resp);
     }
