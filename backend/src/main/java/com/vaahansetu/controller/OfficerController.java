@@ -57,10 +57,18 @@ public class OfficerController {
 
     @GetMapping("/buses")
     public ResponseEntity<?> getBuses(
-            @RequestHeader(value = "Authorization", required = false) String auth) {
+            @RequestHeader(value = "Authorization", required = false) String auth,
+            @RequestParam(required = false) String time) {
 
         if (!isAuthenticated(auth)) return unauthorized();
-        return ResponseEntity.ok(officerService.getAllBuses());
+        java.time.LocalTime refTime = null;
+        if (time != null && !time.isBlank()) {
+            try {
+                if (time.length() == 5) time = time + ":00";
+                refTime = java.time.LocalTime.parse(time.trim());
+            } catch (Exception ignored) {}
+        }
+        return ResponseEntity.ok(officerService.getAllBuses(refTime));
     }
 
     // ----------------------------------------------------------------

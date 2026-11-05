@@ -7,6 +7,7 @@ const API_BASE_URL = window.VAAHAN_API_URL || (
 );
 
 const journeyForm = document.getElementById("journeyForm");
+const travelDate = document.getElementById("travelDate");
 const routeSelect = document.getElementById("route");
 const tripSelect = document.getElementById("tripSelect");
 const boardingSelect = document.getElementById("boarding");
@@ -148,8 +149,9 @@ async function loadRoutes() {
 
 async function loadScheduledTrips(routeId) {
     try {
+        const dateParam = travelDate && travelDate.value ? `?date=${encodeURIComponent(travelDate.value)}` : "";
         const response = await fetch(
-            `${API_BASE_URL}/routes/${routeId}/trips`,
+            `${API_BASE_URL}/routes/${routeId}/trips${dateParam}`,
             { cache: "no-store" }
         );
 
@@ -193,8 +195,9 @@ async function loadScheduledTrips(routeId) {
 
 async function loadPassengerDemand() {
     try {
+        const dateParam = travelDate && travelDate.value ? `?date=${encodeURIComponent(travelDate.value)}` : "";
         const response = await fetch(
-            `${API_BASE_URL}/passenger-journeys/demand`,
+            `${API_BASE_URL}/passenger-journeys/demand${dateParam}`,
             { cache: "no-store" }
         );
 
@@ -217,9 +220,12 @@ async function loadPassengerDemand() {
                 return Number(r.routeId) === Number(item.routeId);
             });
 
-            const routeTitle = route
+            const routeTitle = (route && (route.routeCode || route.routeName))
                 ? `${route.routeCode || route.routeName} (${route.originName} → ${route.destinationName})`
-                : `Route ID: ${item.routeId}`;
+                : (item.routeCode ? `${item.routeCode} (${item.originName} → ${item.destinationName})` : `Route ID: ${item.routeId}`);
+
+            const total = item.totalDemand != null ? item.totalDemand : item.passengerCount;
+            if (total === 0 && !route) return;
 
             const demandCard = document.createElement("div");
             demandCard.className = "demand-item";
@@ -229,7 +235,13 @@ async function loadPassengerDemand() {
 
             const count = document.createElement("p");
             count.className = "passenger-count";
-            count.textContent = `${item.passengerCount} passenger(s) registered`;
+            
+            const breakdown = [];
+            if (item.confirmedCount) breakdown.push(`${item.confirmedCount} booked`);
+            if (item.searchCount) breakdown.push(`${item.searchCount} active inquiries`);
+            if (item.adjustmentCount) breakdown.push(`${item.adjustmentCount > 0 ? '+' : ''}${item.adjustmentCount} admin adj`);
+            const sub = breakdown.length > 0 ? ` [${breakdown.join(', ')}]` : '';
+            count.textContent = `${total} passenger(s) registered & traveling${sub}`;
 
             demandCard.appendChild(title);
             demandCard.appendChild(count);
@@ -239,6 +251,27 @@ async function loadPassengerDemand() {
     } catch (error) {
         console.error("Demand loading error:", error);
         demandList.hidden = true;
+    }
+}
+
+// Record search intent into common demand
+async function logSearchIntent() {
+    if (!routeSelect.value || !boardingSelect.value || !destinationSelect.value) return;
+    try {
+        await fetch(`${API_BASE_URL}/passenger-journeys/intent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                routeId: Number(routeSelect.value),
+                tripId: tripSelect.value ? Number(tripSelect.value) : null,
+                boardingStopId: Number(boardingSelect.value),
+                destinationStopId: Number(destinationSelect.value),
+                passengerCount: passengerCount
+            })
+        });
+        loadPassengerDemand();
+    } catch (e) {
+        console.warn('Search intent logging:', e);
     }
 }
 
@@ -442,6 +475,12 @@ boardingSelect.addEventListener("change", function () {
         });
 
     populateDropdown(destinationSelect, laterStops, "Choose destination");
+});
+
+destinationSelect.addEventListener("change", function () {
+    if (destinationSelect.value) {
+        logSearchIntent();
+    }
 });
 
 // ======================================
@@ -689,6 +728,20 @@ if (newBookingBtn) {
         message.textContent = "";
         actionFeedback.textContent = "";
         resetBookingForm();
+    });
+}
+
+// Initialize travel date to today if available
+if (travelDate && !travelDate.value) {
+    travelDate.value = new Date().toISOString().substring(0, 10);
+}
+
+if (travelDate) {
+    travelDate.addEventListener("change", async function () {
+        if (routeSelect.value) {
+            await loadScheduledTrips(routeSelect.value);
+        }
+        await loadPassengerDemand();
     });
 }
 

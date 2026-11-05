@@ -58,8 +58,8 @@
                     <span class="stat-value" id="statTripCount">--</span>
                 </div>
                 <div class="stat-card">
-                    <span class="stat-label">Simulation Time</span>
-                    <span class="stat-value" id="statSimTime">10:00:00</span>
+                    <span class="stat-label">Service Date</span>
+                    <span class="stat-value" id="statServiceDate">Today</span>
                 </div>
             </div>
 
@@ -68,7 +68,7 @@
                 <button class="tab-btn active" data-tab="tab-fleet">Fleet &amp; Buses</button>
                 <button class="tab-btn" data-tab="tab-session">Session Planning</button>
                 <button class="tab-btn" data-tab="tab-trips">Scheduled Trips &amp; Demand</button>
-                <button class="tab-btn" data-tab="tab-simulation">Simulation &amp; Clock</button>
+                <button class="tab-btn" data-tab="tab-demand">Demand Management</button>
                 <button class="tab-btn" data-tab="tab-allocations">Allocation Engine</button>
             </nav>
 
@@ -150,11 +150,12 @@
                                     <th>Arrival</th>
                                     <th>Assigned Bus</th>
                                     <th>Capacity</th>
+                                    <th>Demand</th>
                                     <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr><td colspan="7" class="text-center">Click 'Load Trips' to fetch schedule</td></tr>
+                                <tr><td colspan="8" class="text-center">Click 'Load Trips' to fetch schedule</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -167,37 +168,48 @@
                 </div>
             </section>
 
-            <!-- Tab 3: Simulation & Clock -->
-            <section id="tab-simulation" class="tab-content">
+            <!-- Tab 3: Common Demand Management (Replaces artificial 2-min simulation) -->
+            <section id="tab-demand" class="tab-content">
                 <div class="admin-card">
-                    <h3>Administrative Simulation Engine</h3>
-                    <p class="form-description">Step the virtual system clock and inject signed passenger demand variations.</p>
-                    
-                    <div class="sim-controls-grid">
-                        <div class="sim-box">
-                            <h4>Simulation Clock Control</h4>
-                            <p>Current System Clock: <strong id="simClockDisplay">10:00:00</strong></p>
-                            <p class="text-muted">Advances virtual time by +2 minutes and shifts active journey windows.</p>
-                            <button id="stepClockBtn" class="action-btn-large primary-btn">+2 Minutes Step</button>
+                    <div class="card-header-flex">
+                        <div>
+                            <h3>Administrative Demand Management (Single Source of Truth)</h3>
+                            <p class="form-description" style="margin-bottom: 0; text-align: left;">
+                                Record authorized operational surges, event spikes, or group reservations into the common passenger demand repository. Changes persist to PostgreSQL and immediately synchronize with Scheduled Departures, the Passenger Portal, and the Allocation Engine.
+                            </p>
                         </div>
-
+                    </div>
+                    
+                    <div class="sim-controls-grid" style="margin-top: 1.5rem;">
                         <div class="sim-box">
-                            <h4>Dynamic Segment Demand Adjustment</h4>
-                            <label for="simTripSelect">Target Scheduled Trip</label>
-                            <select id="simTripSelect" class="admin-input">
+                            <h4>Authorized Demand Adjustment</h4>
+                            <label for="demandTripSelect">Target Scheduled Departure</label>
+                            <select id="demandTripSelect" class="admin-input">
                                 <option value="">Select trip</option>
                             </select>
 
-                            <label for="simDemandDelta">Demand Delta (Signed ± Passengers)</label>
-                            <input type="number" id="simDemandDelta" class="admin-input" value="5" min="-50" max="50">
+                            <label for="demandDelta">Demand Adjustment (Signed &plusmn; Passengers)</label>
+                            <input type="number" id="demandDelta" class="admin-input" value="10" min="-100" max="100">
 
-                            <button id="applyDemandAdjustmentBtn" class="action-btn-large secondary-btn">Apply Signed Adjustment</button>
+                            <div style="display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap;">
+                                <button type="button" class="refresh-btn quick-delta" data-delta="5">+5 Surge</button>
+                                <button type="button" class="refresh-btn quick-delta" data-delta="10">+10 Rush</button>
+                                <button type="button" class="refresh-btn quick-delta" data-delta="20">+20 Event</button>
+                                <button type="button" class="refresh-btn quick-delta" data-delta="-5">-5 Cancellation</button>
+                            </div>
+
+                            <button id="applyDemandAdjustmentBtn" class="action-btn-large primary-btn" style="width: 100%;">
+                                &#x2714; Save Demand Adjustment to Common Demand
+                            </button>
+                            <p id="demandAdjustmentFeedback" class="feedback-msg" aria-live="polite"></p>
                         </div>
-                    </div>
 
-                    <div class="sim-log-card">
-                        <h4>Simulation Event Log</h4>
-                        <pre id="simLog" class="log-console">Awaiting simulation commands...</pre>
+                        <div class="sim-box">
+                            <h4>Selected Trip Common Demand Breakdown</h4>
+                            <div id="demandLiveBreakdown">
+                                <p class="text-muted">Select a trip on the left to inspect its segment-by-segment passenger bookings, search intents, and admin adjustments.</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -206,62 +218,104 @@
             <section id="tab-allocations" class="tab-content">
                 <div class="admin-card">
                     <div class="card-header-flex">
-                        <h3>Constraint-Aware Greedy Allocation Optimization</h3>
+                        <div>
+                            <h3>Constraint-Aware Fleet Allocation Engine</h3>
+                            <p class="form-description" style="margin-bottom: 0; text-align: left;">
+                                Evaluates peak segment passenger demand against fleet capacities, strictly enforcing 30-minute turnarounds and mandatory driver rest windows.
+                            </p>
+                        </div>
                         <button id="runAllocationBtn" class="action-btn-large primary-btn">&#x25B6; Run Allocation Engine</button>
                     </div>
-                    <p class="form-description">
-                        Evaluates segment peak demand against bus capacities, enforcing 30-min turnarounds and mandatory rest windows.
-                    </p>
 
                     <div id="allocationLoading" class="loading-state" hidden>
-                        <p>Computing optimal bus assignments and passenger demand coverage...</p>
+                        <p>Computing optimal bus assignments and passenger demand coverage against fleet constraints...</p>
                     </div>
 
                     <div id="allocationResultsPanel" hidden>
-                        <div class="results-summary-grid">
-                            <div class="summary-metric">
-                                <span class="metric-label">Allocation Status</span>
-                                <span class="metric-value badge-proposed" id="allocStatusBadge">PROPOSED</span>
-                            </div>
-                            <div class="summary-metric">
-                                <span class="metric-label">Proposed Assignments</span>
-                                <span class="metric-value" id="allocAssignedCount">0</span>
-                            </div>
-                            <div class="summary-metric">
-                                <span class="metric-label">Baseline Unmet Demand</span>
-                                <span class="metric-value text-danger" id="allocBaselineUnmet">0</span>
-                            </div>
-                            <div class="summary-metric">
-                                <span class="metric-label">Proposed Unmet Demand</span>
-                                <span class="metric-value text-success" id="allocProposedUnmet">0</span>
+
+                        <!-- Presentation Section 1: Passenger Demand Analysis -->
+                        <div style="margin-top: 1.5rem;">
+                            <h4 style="margin-bottom: 0.5rem; color: #0f766e;">1. Passenger Demand Analysis &amp; Impact</h4>
+                            <div class="results-summary-grid">
+                                <div class="summary-metric">
+                                    <span class="metric-label">Allocation Status</span>
+                                    <span class="metric-value badge-proposed" id="allocStatusBadge">PROPOSED</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Trips Evaluated</span>
+                                    <span class="metric-value" id="allocTripsCount">0</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Total Peak Demand</span>
+                                    <span class="metric-value" id="allocTotalDemand">0 pax</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Baseline Unmet</span>
+                                    <span class="metric-value text-danger" id="allocBaselineUnmet">0 pax</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Proposed Unmet</span>
+                                    <span class="metric-value text-success" id="allocProposedUnmet">0 pax</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Demand Accommodated</span>
+                                    <span class="metric-value text-success" id="allocAccommodated">0 pax</span>
+                                </div>
                             </div>
                         </div>
 
-                        <div class="approval-strip">
-                            <div>
-                                <strong>Ready for Execution:</strong> Review proposed changes below and approve to persist into live operational schedule.
+                        <!-- Presentation Section 2: Fleet Availability & Constraints -->
+                        <div style="margin-top: 1rem;">
+                            <h4 style="margin-bottom: 0.5rem; color: #0f766e;">2. Fleet Availability &amp; Eligibility</h4>
+                            <div class="results-summary-grid">
+                                <div class="summary-metric">
+                                    <span class="metric-label">Total Fleet Buses</span>
+                                    <span class="metric-value" id="fleetTotalCount">0</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Available / Assigned</span>
+                                    <span class="metric-value text-success" id="fleetAvailableCount">0</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="metric-label">Resting / Turnaround</span>
+                                    <span class="metric-value text-muted" id="fleetRestingCount">0</span>
+                                </div>
                             </div>
-                            <button id="approveAllocationBtn" class="action-btn-large success-btn">&#x2714; Approve &amp; Persist Allocation</button>
                         </div>
-                        <p id="approvalFeedback" class="feedback-msg" aria-live="polite"></p>
 
-                        <h4>Proposed Bus Assignments</h4>
-                        <div class="table-responsive">
-                            <table class="data-table" id="allocationTable">
-                                <thead>
-                                    <tr>
-                                        <th>Trip ID</th>
-                                        <th>Departure Time</th>
-                                        <th>Baseline Bus</th>
-                                        <th>Baseline Cap</th>
-                                        <th>Proposed Bus</th>
-                                        <th>Proposed Cap</th>
-                                        <th>Change Reason</th>
-                                    </tr>
-                                </thead>
-                                <tbody></tbody>
-                            </table>
+                        <!-- Presentation Section 3: Proposed Bus Assignments & Natural Language Reasons -->
+                        <div style="margin-top: 1.5rem;">
+                            <h4 style="margin-bottom: 0.5rem; color: #0f766e;">3. Proposed Bus Assignments &amp; Decision Logic</h4>
+                            <div class="table-responsive">
+                                <table class="data-table" id="allocationTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Trip ID &amp; Route</th>
+                                            <th>Departure &amp; Arrival</th>
+                                            <th>Peak Demand</th>
+                                            <th>Baseline Bus</th>
+                                            <th>Proposed Bus</th>
+                                            <th>Occupancy</th>
+                                            <th>Decision Explanation</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
                         </div>
+
+                        <!-- Presentation Section 4: Operational State Comparison & Approval -->
+                        <div style="margin-top: 1.5rem;">
+                            <h4 style="margin-bottom: 0.5rem; color: #0f766e;">4. Operational Comparison &amp; Execution</h4>
+                            <div class="approval-strip">
+                                <div id="comparisonSummaryText" style="flex: 1;">
+                                    <strong>Operational State Comparison:</strong> Running this allocation eliminates unmet demand and assigns right-sized buses to demand surges.
+                                </div>
+                                <button id="approveAllocationBtn" class="action-btn-large success-btn">&#x2714; Approve &amp; Persist Allocation</button>
+                            </div>
+                            <p id="approvalFeedback" class="feedback-msg" aria-live="polite"></p>
+                        </div>
+
                     </div>
                 </div>
             </section>

@@ -145,21 +145,56 @@ public class OfficerRepository {
     // ----------------------------------------------------------------
 
     public List<Map<String, Object>> findScheduledTrips(LocalDate serviceDate) {
+        return findScheduledTrips(findActiveSessionId(), serviceDate);
+    }
+
+    public List<Map<String, Object>> findScheduledTrips(Long sessionId, LocalDate serviceDate) {
         String sql = """
-                SELECT t.trip_id              AS "tripId",
-                       t.route_id             AS "routeId",
-                       r.route_code           AS "routeCode",
-                       r.route_name           AS "routeName",
-                       t.service_date         AS "serviceDate",
-                       t.departure_time       AS "departureTime",
-                       t.expected_arrival_time AS "expectedArrivalTime",
-                       t.status::text         AS "status",
-                       ta.bus_id              AS "currentBusId",
-                       b.registration_number  AS "currentBusRegistration",
-                       b.capacity             AS "currentBusCapacity",
-                       b.rest_duration_minutes AS "currentBusRestDurationMinutes",
-                       b.rest_start::text     AS "currentBusRestStart",
-                       b.rest_end::text       AS "currentBusRestEnd"
+                SELECT t.trip_id               AS "tripId",
+                       t.route_id              AS "routeId",
+                       r.route_code            AS "routeCode",
+                       r.route_name            AS "routeName",
+                       r.origin_name           AS "originName",
+                       r.destination_name      AS "destinationName",
+                       t.service_date          AS "serviceDate",
+                       t.departure_time        AS "departureTime",
+                       t.expected_arrival_time  AS "expectedArrivalTime",
+                       t.status::text          AS "status",
+                       ta.bus_id               AS "currentBusId",
+                       b.registration_number   AS "currentBusRegistration",
+                       COALESCE(b.capacity, 0) AS "currentBusCapacity",
+                       COALESCE(b.rest_duration_minutes, 0) AS "currentBusRestDurationMinutes",
+                       b.rest_start::text      AS "currentBusRestStart",
+                       b.rest_end::text        AS "currentBusRestEnd",
+                       COALESCE((
+                           SELECT MAX(sub.seg_demand)
+                           FROM (
+                               SELECT (
+                                   COALESCE((
+                                       SELECT SUM(pj.passenger_count)
+                                       FROM passenger_journeys pj
+                                       WHERE pj.trip_id = t.trip_id
+                                         AND pj.journey_status IN ('REGISTERED', 'BOARDED', 'COMPLETED', 'UNCONFIRMED')
+                                         AND pj.boarding_stop_id IN (
+                                             SELECT rs3.stop_id FROM route_stops rs3 WHERE rs3.route_id = rs.route_id AND rs3.stop_sequence <= rs.stop_sequence
+                                         )
+                                         AND pj.destination_stop_id IN (
+                                             SELECT rs4.stop_id FROM route_stops rs4 WHERE rs4.route_id = rs.route_id AND rs4.stop_sequence >= rs.stop_sequence + 1
+                                         )
+                                   ), 0)
+                                   +
+                                   COALESCE((
+                                       SELECT SUM(sda.demand_delta)
+                                       FROM segment_demand_adjustments sda
+                                       WHERE (sda.session_id = ? OR ? IS NULL)
+                                         AND sda.route_id = rs.route_id
+                                         AND sda.segment_start_stop_id = rs.stop_id
+                                   ), 0)
+                               ) AS seg_demand
+                               FROM route_stops rs
+                               WHERE rs.route_id = t.route_id
+                           ) sub
+                       ), 0) AS "demand"
                 FROM scheduled_trips t
                 JOIN routes r ON r.route_id = t.route_id
                 LEFT JOIN trip_assignments ta
@@ -170,9 +205,15 @@ public class OfficerRepository {
                         (SELECT MAX(service_date) FROM scheduled_trips),
                         CURRENT_DATE)
                   AND t.status = 'SCHEDULED'
+                  AND r.is_active = TRUE
+                  AND (
+                      ? IS NULL
+                      OR NOT EXISTS (SELECT 1 FROM session_routes sr WHERE sr.session_id = ?)
+                      OR t.route_id IN (SELECT sr2.route_id FROM session_routes sr2 WHERE sr2.session_id = ?)
+                  )
                 ORDER BY t.departure_time, t.trip_id
                 """;
-        return jdbcTemplate.queryForList(sql, serviceDate);
+        return jdbcTemplate.queryForList(sql, sessionId, sessionId, serviceDate, sessionId, sessionId, sessionId);
     }
 
     // ----------------------------------------------------------------
@@ -196,11 +237,10 @@ public class OfficerRepository {
                     s_start.stop_name          AS "startStopName",
                     s_end.stop_id              AS "endStopId",
                     s_end.stop_name            AS "endStopName",
-                    COALESCE(SUM(
-                        CASE WHEN pj.journey_status IN ('REGISTERED','BOARDED','COMPLETED')
-                             THEN pj.passenger_count ELSE 0 END
-                    ), 0)                      AS "registeredDemand",
-                    COALESCE(SUM(sda.demand_delta), 0) AS "simulatedAdjustment",
+                    COALESCE(j.confirmed_demand, 0) AS "registeredDemand",
+                    COALESCE(j.search_demand, 0)    AS "searchIntentDemand",
+                    COALESCE(a.adj_demand, 0)       AS "simulatedAdjustment",
+                    GREATEST(0, COALESCE(j.confirmed_demand, 0) + COALESCE(j.search_demand, 0) + COALESCE(a.adj_demand, 0)) AS "effectiveDemand",
                     COALESCE(b.registration_number, 'UNASSIGNED') AS "currentBus",
                     COALESCE(b.capacity, 0)    AS "currentCapacity"
                 FROM route_stops rs
@@ -213,29 +253,34 @@ public class OfficerRepository {
                 JOIN scheduled_trips t ON t.route_id = rs.route_id AND t.trip_id = ?
                 LEFT JOIN trip_assignments ta ON ta.trip_id = t.trip_id AND ta.status = 'ACTIVE'
                 LEFT JOIN buses b ON b.bus_id = ta.bus_id
-                LEFT JOIN passenger_journeys pj
-                    ON pj.trip_id = t.trip_id
-                   AND pj.session_id = ?
-                   AND pj.boarding_stop_id IN (
-                       SELECT rs3.stop_id FROM route_stops rs3
-                       WHERE rs3.route_id = rs.route_id AND rs3.stop_sequence <= rs.stop_sequence
-                   )
-                   AND pj.destination_stop_id IN (
-                       SELECT rs4.stop_id FROM route_stops rs4
-                       WHERE rs4.route_id = rs.route_id AND rs4.stop_sequence >= rs.stop_sequence + 1
-                   )
-                LEFT JOIN segment_demand_adjustments sda
-                    ON sda.session_id = ?
-                   AND sda.route_id = rs.route_id
-                   AND sda.segment_start_stop_id = rs.stop_id
-                   AND sda.segment_end_stop_id = rs2.stop_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(CASE WHEN pj.journey_status IN ('REGISTERED','BOARDED','COMPLETED') THEN pj.passenger_count ELSE 0 END), 0) AS confirmed_demand,
+                        COALESCE(SUM(CASE WHEN pj.journey_status = 'UNCONFIRMED' THEN pj.passenger_count ELSE 0 END), 0) AS search_demand
+                    FROM passenger_journeys pj
+                    WHERE pj.trip_id = t.trip_id
+                      AND (pj.session_id = ? OR ? IS NULL)
+                      AND pj.boarding_stop_id IN (
+                          SELECT rs3.stop_id FROM route_stops rs3
+                          WHERE rs3.route_id = rs.route_id AND rs3.stop_sequence <= rs.stop_sequence
+                      )
+                      AND pj.destination_stop_id IN (
+                          SELECT rs4.stop_id FROM route_stops rs4
+                          WHERE rs4.route_id = rs.route_id AND rs4.stop_sequence >= rs.stop_sequence + 1
+                      )
+                ) j ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(sda.demand_delta), 0) AS adj_demand
+                    FROM segment_demand_adjustments sda
+                    WHERE (sda.session_id = ? OR ? IS NULL)
+                      AND sda.route_id = rs.route_id
+                      AND sda.segment_start_stop_id = rs.stop_id
+                      AND sda.segment_end_stop_id = rs2.stop_id
+                ) a ON TRUE
                 WHERE rs.route_id = (SELECT route_id FROM scheduled_trips WHERE trip_id = ?)
-                GROUP BY rs.stop_sequence, s_start.stop_id, s_start.stop_name,
-                         s_end.stop_id, s_end.stop_name, t.trip_id, t.route_id, r.route_code,
-                         t.service_date, t.departure_time, b.registration_number, b.capacity
                 ORDER BY rs.stop_sequence
                 """;
-        return jdbcTemplate.queryForList(sql, tripId, sessionId, sessionId, tripId);
+        return jdbcTemplate.queryForList(sql, tripId, sessionId, sessionId, sessionId, sessionId, tripId);
     }
 
     // ----------------------------------------------------------------
@@ -440,6 +485,16 @@ public class OfficerRepository {
                 "SELECT simulation_elapsed_minutes FROM planning_sessions WHERE session_id = ?",
                 Integer.class, sessionId);
         return elapsed == null ? 0 : elapsed;
+    }
+
+    public void saveDemandAdjustment(long sessionId, long routeId, List<Long> startStopIds, List<Long> endStopIds, int delta) {
+        for (int i = 0; i < startStopIds.size(); i++) {
+            jdbcTemplate.update(
+                    "INSERT INTO segment_demand_adjustments " +
+                    "(session_id, route_id, segment_start_stop_id, segment_end_stop_id, demand_delta, is_simulated) " +
+                    "VALUES (?, ?, ?, ?, ?, FALSE)",
+                    sessionId, routeId, startStopIds.get(i), endStopIds.get(i), delta);
+        }
     }
 
     // ----------------------------------------------------------------

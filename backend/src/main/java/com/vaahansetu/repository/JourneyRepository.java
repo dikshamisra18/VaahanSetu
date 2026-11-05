@@ -230,21 +230,76 @@ public class JourneyRepository {
         return results.isEmpty() ? null : results.get(0);
     }
 
-    // Get passenger demand grouped by route for the active session
+    // Get passenger demand grouped by route for the active session and service date
     public List<Map<String, Object>> findPassengerDemand(Long sessionId) {
+        return findPassengerDemand(sessionId, null);
+    }
 
+    public List<Map<String, Object>> findPassengerDemand(Long sessionId, LocalDate serviceDate) {
         String sql = """
-                SELECT st.route_id AS "routeId",
-                       SUM(pj.passenger_count) AS "passengerCount"
-                FROM passenger_journeys pj
-                JOIN scheduled_trips st
-                    ON st.trip_id = pj.trip_id
-                WHERE pj.session_id = ?
-                  AND pj.journey_status IN ('REGISTERED', 'BOARDED')
-                GROUP BY st.route_id
+                SELECT r.route_id AS "routeId",
+                       r.route_code AS "routeCode",
+                       r.route_name AS "routeName",
+                       r.origin_name AS "originName",
+                       r.destination_name AS "destinationName",
+                       COALESCE(j.confirmed_count, 0) AS "confirmedCount",
+                       COALESCE(j.search_count, 0) AS "searchCount",
+                       COALESCE(a.adj_count, 0) AS "adjustmentCount",
+                       GREATEST(0, COALESCE(j.confirmed_count, 0) + COALESCE(j.search_count, 0) + COALESCE(a.adj_count, 0)) AS "passengerCount",
+                       GREATEST(0, COALESCE(j.confirmed_count, 0) + COALESCE(j.search_count, 0) + COALESCE(a.adj_count, 0)) AS "totalDemand"
+                FROM routes r
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(SUM(CASE WHEN pj.journey_status IN ('REGISTERED', 'BOARDED', 'COMPLETED') THEN pj.passenger_count ELSE 0 END), 0) AS confirmed_count,
+                        COALESCE(SUM(CASE WHEN pj.journey_status = 'UNCONFIRMED' THEN pj.passenger_count ELSE 0 END), 0) AS search_count
+                    FROM passenger_journeys pj
+                    JOIN scheduled_trips st ON st.trip_id = pj.trip_id
+                    WHERE st.route_id = r.route_id
+                      AND (pj.session_id = ? OR ? IS NULL)
+                      AND st.service_date = COALESCE(?,
+                            (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                            (SELECT MAX(service_date) FROM scheduled_trips),
+                            CURRENT_DATE)
+                ) j ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(MAX(sub.max_seg), 0) AS adj_count
+                    FROM (
+                        SELECT COALESCE(SUM(sda.demand_delta), 0) AS max_seg
+                        FROM segment_demand_adjustments sda
+                        WHERE sda.route_id = r.route_id
+                          AND (sda.session_id = ? OR ? IS NULL)
+                        GROUP BY sda.segment_start_stop_id
+                    ) sub
+                ) a ON TRUE
+                WHERE r.is_active = TRUE
+                ORDER BY r.route_id
                 """;
+        return jdbcTemplate.queryForList(sql, sessionId, sessionId, serviceDate, sessionId, sessionId);
+    }
 
-        return jdbcTemplate.queryForList(sql, sessionId);
+    // Record passenger travel search intent into common demand
+    public Long recordSearchIntent(Long sessionId, Long tripId, Long boardingStopId, Long destinationStopId, Integer count) {
+        String sql = """
+                INSERT INTO passenger_journeys (
+                    session_id,
+                    trip_id,
+                    boarding_stop_id,
+                    destination_stop_id,
+                    passenger_count,
+                    journey_status
+                )
+                VALUES (?, ?, ?, ?, ?, 'UNCONFIRMED')
+                RETURNING journey_id
+                """;
+        return jdbcTemplate.queryForObject(
+                sql,
+                Long.class,
+                sessionId,
+                tripId,
+                boardingStopId,
+                destinationStopId,
+                count != null && count > 0 ? count : 1
+        );
     }
 
     // Update the status of a passenger journey

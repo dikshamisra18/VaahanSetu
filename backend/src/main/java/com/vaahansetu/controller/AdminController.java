@@ -65,8 +65,8 @@ public class AdminController {
         return ResponseEntity.ok(Map.of("message", "Session selection saved successfully."));
     }
 
-    @PostMapping("/simulation/step")
-    public ResponseEntity<?> simulateStep(
+    @PostMapping({"/demand/adjust", "/simulation/step"})
+    public ResponseEntity<?> adjustDemand(
             @RequestHeader(value = "Authorization", required = false) String auth,
             @RequestBody Map<String, Object> body) {
 
@@ -78,25 +78,14 @@ public class AdminController {
         String role = (String) session.get("role");
         if (!"ADMIN".equalsIgnoreCase(role)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of("message", "Only administrators can run simulations."));
+                    .body(Map.of("message", "Only administrators can configure operational demand."));
         }
 
         if (body != null && "ADVANCE_CLOCK".equalsIgnoreCase(String.valueOf(body.get("action")))) {
-            int minutes = 2;
-            if (body.get("minutes") != null) {
-                try {
-                    minutes = Integer.parseInt(body.get("minutes").toString().trim());
-                } catch (Exception ignored) {}
-            }
-            int elapsed = officerService.advanceClock(minutes);
-            String currentTime = body.get("currentTime") != null ? body.get("currentTime").toString() : "10:02:00";
             return ResponseEntity.ok(Map.of(
                     "status", "SUCCESS",
                     "action", "ADVANCE_CLOCK",
-                    "minutes", minutes,
-                    "currentTime", currentTime,
-                    "simulationElapsedMinutes", elapsed,
-                    "message", "Simulation clock advanced by " + minutes + " minutes (Elapsed: T+" + String.format("%02d:%02d", elapsed / 60, elapsed % 60) + ")"
+                    "message", "Simulation clock advance disabled per operational directive."
             ));
         }
 
@@ -111,36 +100,26 @@ public class AdminController {
             return ResponseEntity.badRequest().body(Map.of("message", "Invalid tripId: " + body.get("tripId")));
         }
 
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> segments = (List<Map<String, Object>>) body.get("segments");
-
-        if ((segments == null || segments.isEmpty()) && body.get("demandDelta") != null) {
+        if (body.get("demandDelta") != null) {
             int delta;
             try {
                 delta = Integer.parseInt(body.get("demandDelta").toString().trim());
             } catch (Exception e) {
                 return ResponseEntity.badRequest().body(Map.of("message", "Invalid demandDelta: " + body.get("demandDelta")));
             }
-            List<Map<String, Object>> existingSegments = officerService.getSegmentDemand(tripId);
-            if (existingSegments.isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("message", "Trip " + tripId + " not found or has no stops."));
+            try {
+                Map<String, Object> result = officerService.adjustDemand(tripId, delta);
+                return ResponseEntity.ok(result);
+            } catch (Exception e) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(Map.of("message", "Demand adjustment failed: " + e.getMessage()));
             }
-            List<Map<String, Object>> builtSegments = new ArrayList<>();
-            for (Map<String, Object> seg : existingSegments) {
-                long startStopId = Long.parseLong(seg.get("startStopId").toString().trim());
-                long endStopId = Long.parseLong(seg.get("endStopId").toString().trim());
-                builtSegments.add(Map.of(
-                        "startStopId", startStopId,
-                        "endStopId", endStopId,
-                        "delta", delta
-                ));
-            }
-            segments = builtSegments;
         }
 
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> segments = (List<Map<String, Object>>) body.get("segments");
         if (segments == null || segments.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("message", "At least one segment or demand delta is required."));
+            return ResponseEntity.badRequest().body(Map.of("message", "demandDelta or segments are required."));
         }
 
         try {
@@ -148,7 +127,7 @@ public class AdminController {
             return ResponseEntity.ok(result);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("message", "Simulation failed: " + e.getMessage()));
+                    .body(Map.of("message", "Adjustment failed: " + e.getMessage()));
         }
     }
 }

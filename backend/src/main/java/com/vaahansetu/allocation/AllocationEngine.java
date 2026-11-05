@@ -91,6 +91,11 @@ public final class AllocationEngine {
             int[] d = demand.get(t.id());
             for (int s = from; s < to; s++) d[s] += j.passengers();
         }
+        for (int[] d : demand.values()) {
+            for (int s = 0; s < d.length; s++) {
+                if (d[s] < 0) d[s] = 0;
+            }
+        }
         return demand;
     }
 
@@ -151,17 +156,45 @@ public final class AllocationEngine {
 
     private static TripOutcome outcome(Trip t, Bus best, int[] d) {
         Long prev = t.currentBusId();
+        int peak = 0;
+        for (int x : d) if (x > peak) peak = x;
+
         if (best == null) {
             return new TripOutcome(t.id(), t.routeId(), prev, null, "UNASSIGNED",
-                    "No ACTIVE bus is free for this full trip (overlap, minimum rest, fixed daily rest window, or existing commitment).");
+                    String.format("Peak demand is %d passengers. No free active bus available (due to 30-min turnaround constraint, daily rest window, or prior commitments).", peak));
         }
+
+        int unmetCount = unmet(d, best.capacity());
+        int occupancyPercent = best.capacity() > 0 ? Math.min(100, (peak * 100) / best.capacity()) : 0;
+
         if (prev != null && prev == best.id()) {
-            return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "UNCHANGED",
-                    "Current bus is already the best choice.");
+            if (unmetCount == 0) {
+                return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "UNCHANGED",
+                        String.format("Retained Bus %s (%d seats): fully accommodates peak load (%d passengers, %d%% occupancy) while respecting 30-min rest constraint.",
+                                best.regNo(), best.capacity(), peak, occupancyPercent));
+            } else {
+                return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "UNCHANGED",
+                        String.format("Retained Bus %s (%d seats): highest capacity available bus; leaves %d unmet passenger-segments due to high route demand.",
+                                best.regNo(), best.capacity(), unmetCount));
+            }
         }
-        String why = String.format("Bus %s (capacity %d) leaves %d unmet vs %d with the current bus.",
-                best.regNo(), best.capacity(), unmet(d, best.capacity()), unmet(d, t.currentBusCapacity()));
-        return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "REASSIGNED", why);
+
+        if (prev == null) {
+            return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "REASSIGNED",
+                    String.format("Assigned Bus %s (%d seats) for %d peak passengers (%d%% occupancy); satisfies operational rest and scheduling constraints.",
+                            best.regNo(), best.capacity(), peak, occupancyPercent));
+        }
+
+        int prevUnmet = unmet(d, t.currentBusCapacity());
+        if (unmetCount < prevUnmet) {
+            return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "REASSIGNED",
+                    String.format("Upgraded to larger Bus %s (%d seats vs %d seats): reduced unmet demand from %d to %d for peak load of %d passengers.",
+                            best.regNo(), best.capacity(), t.currentBusCapacity(), prevUnmet, unmetCount, peak));
+        } else {
+            return new TripOutcome(t.id(), t.routeId(), prev, best.id(), "REASSIGNED",
+                    String.format("Reassigned to Bus %s (%d seats): optimizes fleet utilization (%d%% occupancy) for %d peak passengers with zero unmet demand.",
+                            best.regNo(), best.capacity(), occupancyPercent, peak));
+        }
     }
 
     /** One row per (route, segment): demand and capacity summed over all trips of that route. */

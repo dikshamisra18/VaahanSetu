@@ -1,9 +1,11 @@
 package com.vaahansetu.controller;
 
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -13,6 +15,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.vaahansetu.repository.JourneyRepository;
@@ -159,17 +162,65 @@ public class PassengerJourneyController {
         return ResponseEntity.ok(journey);
     }
 
-    // Get passenger demand for the active planning session
+    // Get common passenger demand for the active planning session and date
     @GetMapping("/demand")
-    public ResponseEntity<List<Map<String, Object>>> getPassengerDemand() {
+    public ResponseEntity<List<Map<String, Object>>> getPassengerDemand(
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
 
         Long sessionId = journeyRepository.findActiveSessionId();
-        if (sessionId == null) {
-            return ResponseEntity.ok(List.of());
+        List<Map<String, Object>> demand = journeyRepository.findPassengerDemand(sessionId, date);
+        return ResponseEntity.ok(demand != null ? demand : List.of());
+    }
+
+    // Record passenger search intent into common demand
+    @PostMapping({"/intent", "/search"})
+    public ResponseEntity<Map<String, Object>> recordSearchIntent(
+            @RequestBody Map<String, Object> request) {
+
+        if (request == null) {
+            return error(HttpStatus.BAD_REQUEST, "Please provide search intent details.");
         }
 
-        List<Map<String, Object>> demand = journeyRepository.findPassengerDemand(sessionId);
-        return ResponseEntity.ok(demand);
+        Long routeId = toLong(request.get("routeId"));
+        Long boardingStopId = request.get("boardingStopId") != null
+                ? toLong(request.get("boardingStopId"))
+                : toLong(request.get("startStopId"));
+        Long destinationStopId = request.get("destinationStopId") != null
+                ? toLong(request.get("destinationStopId"))
+                : toLong(request.get("endStopId"));
+        Integer count = request.get("passengerCount") != null
+                ? toInteger(request.get("passengerCount"))
+                : toInteger(request.get("passengers"));
+        Long tripId = toLong(request.get("tripId"));
+
+        if (routeId == null || boardingStopId == null || destinationStopId == null) {
+            return error(HttpStatus.BAD_REQUEST, "routeId, boardingStopId, and destinationStopId are required.");
+        }
+
+        Long sessionId = journeyRepository.findActiveSessionId();
+        if (tripId == null) {
+            List<Map<String, Object>> trips = journeyRepository.findTripsForRoute(routeId);
+            if (!trips.isEmpty()) {
+                tripId = toLong(trips.get(0).get("tripId"));
+            }
+        }
+
+        if (tripId != null) {
+            try {
+                Long journeyId = journeyRepository.recordSearchIntent(sessionId, tripId, boardingStopId, destinationStopId, count);
+                return ResponseEntity.ok(Map.of(
+                        "status", "SUCCESS",
+                        "journeyId", journeyId,
+                        "message", "Search intent recorded in common demand."
+                ));
+            } catch (Exception e) {
+                // If duplicates or constraints, gracefully acknowledge
+                return ResponseEntity.ok(Map.of("status", "IGNORED", "message", e.getMessage()));
+            }
+        }
+
+        return ResponseEntity.ok(Map.of("status", "SUCCESS", "message", "Search noted"));
     }
 
     // Update journey status

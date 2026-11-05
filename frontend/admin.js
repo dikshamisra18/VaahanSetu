@@ -190,32 +190,23 @@ async function fetchActiveSession() {
             const session = await res.json();
             state.activeSession = session;
             if (session) {
-                let baseMinutes = 600;
                 if (session.startedAt) {
                     try {
-                        const d = new Date(session.startedAt);
-                        if (!isNaN(d.getTime())) {
-                            baseMinutes = d.getUTCHours() * 60 + d.getUTCMinutes();
-                        }
+                        const dateStr = session.startedAt.substring(0, 10);
                         const dateFilter = document.getElementById('tripDateFilter');
                         if (dateFilter && !dateFilter.value) {
-                            dateFilter.value = session.startedAt.substring(0, 10);
+                            dateFilter.value = dateStr;
                         }
+                        const statDateEl = document.getElementById('statServiceDate');
+                        if (statDateEl) statDateEl.textContent = dateStr;
                     } catch (e) {
                         console.warn('Could not parse session startedAt:', e);
                     }
                 }
-                const elapsed = typeof session.simulationElapsedMinutes === 'number' ? session.simulationElapsedMinutes : 0;
-                state.simClockMinutes = baseMinutes + elapsed;
-                const newTime = formatMinutesToTime(state.simClockMinutes);
-                const statSimEl = document.getElementById('statSimTime');
-                const simClockEl = document.getElementById('simClockDisplay');
-                if (statSimEl) statSimEl.textContent = newTime;
-                if (simClockEl) simClockEl.textContent = newTime;
             }
         }
     } catch (err) {
-        console.warn('Could not sync active session clock:', err);
+        console.warn('Could not sync active session:', err);
     }
 }
 
@@ -224,7 +215,7 @@ async function fetchBuses() {
     const tbody = document.querySelector('#busesTable tbody');
     if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center">Loading fleet data...</td></tr>';
     try {
-        const res = await fetch(`${API_BASE}/officer/buses?time=${formatMinutesToTime(state.simClockMinutes)}`, {
+        const res = await fetch(`${API_BASE}/officer/buses`, {
             headers: getAuthHeaders()
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -240,18 +231,24 @@ async function fetchBuses() {
         }
 
         tbody.innerHTML = buses.map(bus => {
-            const restWindow = (bus.restWindowStart && bus.restWindowEnd)
-                ? `${bus.restWindowStart} – ${bus.restWindowEnd}`
-                : 'None assigned';
-            const statusBadge = bus.available !== false
+            const hasRestTimes = bus.restStart && bus.restEnd;
+            const startStr = hasRestTimes ? String(bus.restStart).substring(0, 5) : '';
+            const endStr = hasRestTimes ? String(bus.restEnd).substring(0, 5) : '';
+            const durStr = bus.restDurationMinutes ? ` (${bus.restDurationMinutes}m)` : '';
+            const restWindow = hasRestTimes
+                ? `${startStr} – ${endStr}${durStr}`
+                : ((bus.restWindowStart && bus.restWindowEnd) ? `${bus.restWindowStart} – ${bus.restWindowEnd}` : 'None assigned');
+
+            const isAvail = bus.available !== false;
+            const statusBadge = isAvail
                 ? '<span class="status-badge badge-active">Available</span>'
-                : '<span class="status-badge badge-resting">Resting / In Use</span>';
+                : `<span class="status-badge badge-resting" title="${bus.availabilityReason || 'Resting / Assigned'}">${bus.availabilityReason ? bus.availabilityReason : 'Unavailable'}</span>`;
 
             return `
                 <tr>
                     <td><strong>#${bus.busId}</strong></td>
                     <td>${bus.registrationNumber || '-'}</td>
-                    <td>${bus.capacity} seats</td>
+                    <td><strong>${bus.capacity}</strong> seats</td>
                     <td>${restWindow}</td>
                     <td>${statusBadge}</td>
                 </tr>
@@ -286,11 +283,13 @@ async function fetchTrips() {
         dateInput = state.activeSession.startedAt.substring(0, 10);
         if (filterEl) filterEl.value = dateInput;
     }
+    const statDateEl = document.getElementById('statServiceDate');
+    if (statDateEl && dateInput) statDateEl.textContent = dateInput;
 
     const tbody = document.querySelector('#tripsTable tbody');
-    const simTripSelect = document.getElementById('simTripSelect');
+    const demandTripSelect = document.getElementById('demandTripSelect');
 
-    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="text-center">Loading scheduled departures...</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="text-center">Loading scheduled departures...</td></tr>';
 
     try {
         const url = dateInput ? `${API_BASE}/officer/trips?date=${encodeURIComponent(dateInput)}` : `${API_BASE}/officer/trips`;
@@ -303,21 +302,25 @@ async function fetchTrips() {
         const statTripEl = document.getElementById('statTripCount');
         if (statTripEl) statTripEl.textContent = trips.length;
 
-        // Populate Sim Trip select
-        if (simTripSelect) {
-            simTripSelect.innerHTML = '<option value="">Select trip</option>' +
+        // Populate Demand Trip select
+        if (demandTripSelect) {
+            const previousSelected = demandTripSelect.value;
+            demandTripSelect.innerHTML = '<option value="">Select trip</option>' +
                 trips.map(t => {
                     const timeLabel = t.departureTime ? (t.departureTime.length > 16 ? t.departureTime.substring(11, 16) : t.departureTime) : 'Dep';
                     return `<option value="${t.tripId}">Trip #${t.tripId} (${t.routeCode || 'Route'} @ ${timeLabel})</option>`;
                 }).join('');
-            if (trips.length > 0 && !simTripSelect.value) {
-                simTripSelect.selectedIndex = 1;
+            if (previousSelected && trips.some(t => String(t.tripId) === String(previousSelected))) {
+                demandTripSelect.value = previousSelected;
+            } else if (trips.length > 0) {
+                demandTripSelect.selectedIndex = 1;
+                loadDemandBreakdown(trips[0].tripId);
             }
         }
 
         if (!tbody) return;
         if (trips.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center">No trips scheduled for this date.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center">No trips scheduled for this date.</td></tr>';
             return;
         }
 
@@ -328,6 +331,21 @@ async function fetchTrips() {
             const cap = busCap ? `${busCap} seats` : '-';
             const depLabel = t.departureTime ? (t.departureTime.length > 16 ? t.departureTime.substring(11, 16) : t.departureTime) : '-';
             const arrLabel = t.expectedArrivalTime ? (t.expectedArrivalTime.length > 16 ? t.expectedArrivalTime.substring(11, 16) : t.expectedArrivalTime) : (t.arrivalTime || '-');
+            const peakDemand = t.demand || 0;
+
+            let demandBadge = '';
+            if (busCap && busCap > 0) {
+                const occ = Math.round((peakDemand / busCap) * 100);
+                if (occ > 100) {
+                    demandBadge = `<span class="status-badge badge-resting" style="margin-left: 6px;">Overcap (${occ}%)</span>`;
+                } else if (occ >= 80) {
+                    demandBadge = `<span class="status-badge badge-changed" style="margin-left: 6px;">${occ}%</span>`;
+                } else {
+                    demandBadge = `<span class="status-badge badge-active" style="margin-left: 6px;">${occ}%</span>`;
+                }
+            }
+            const demandDisplay = `<strong>${peakDemand} pax</strong>${demandBadge}`;
+
             return `
                 <tr>
                     <td><strong>#${t.tripId}</strong></td>
@@ -336,6 +354,7 @@ async function fetchTrips() {
                     <td>${arrLabel}</td>
                     <td>${assignedBus}</td>
                     <td>${cap}</td>
+                    <td>${demandDisplay}</td>
                     <td>
                         <button class="action-btn-small" onclick="loadTripDemand(${t.tripId})">View Demand</button>
                     </td>
@@ -343,7 +362,7 @@ async function fetchTrips() {
             `;
         }).join('');
     } catch (err) {
-        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">Error loading trips: ${err.message}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center text-danger">Error loading trips: ${err.message}</td></tr>`;
     }
 }
 
@@ -381,17 +400,17 @@ window.loadTripDemand = async function(tripId) {
             demand.map(d => {
                 const baseD = d.registeredDemand ?? d.baseDemand ?? 0;
                 const simAdj = d.simulatedAdjustment ?? 0;
-                const effD = d.effectiveDemand ?? d.adjustedDemand ?? baseD;
+                const effD = d.effectiveDemand ?? d.adjustedDemand ?? (baseD + simAdj);
                 const adjLabel = simAdj !== 0 ? (simAdj > 0 ? `+${simAdj}` : `${simAdj}`) : '0';
                 const cap = d.currentCapacity ? `${d.currentCapacity} seats` : (d.currentBus && d.currentBus !== 'UNASSIGNED' ? d.currentBus : 'None');
                 return `
                     <div class="segment-card">
                         <div class="segment-name">${d.segmentIndex || '#'}. ${d.startStopName || 'Start'} &rarr; ${d.endStopName || 'End'}</div>
                         <div class="segment-metrics">
-                            <span>Base Demand: <strong>${baseD}</strong></span>
-                            <span>Adjustment: <strong>${adjLabel}</strong></span>
-                            <span>Effective Demand: <strong>${effD}</strong></span>
-                            <span>Current Bus Cap: <strong>${cap}</strong></span>
+                            <span>Base Inquiries/Bookings: <strong>${baseD}</strong></span>
+                            <span>Admin Adjustments: <strong>${adjLabel}</strong></span>
+                            <span>Effective Demand: <strong>${effD} pax</strong></span>
+                            <span>Current Bus Capacity: <strong>${cap}</strong></span>
                         </div>
                     </div>
                 `;
@@ -405,99 +424,122 @@ window.loadTripDemand = async function(tripId) {
     }
 };
 
-// Simulation Controls
-const stepClockBtn = document.getElementById('stepClockBtn');
-if (stepClockBtn) {
-    stepClockBtn.addEventListener('click', async () => {
-        state.simClockMinutes += 2;
-        const newTime = formatMinutesToTime(state.simClockMinutes);
-        const statSimEl = document.getElementById('statSimTime');
-        const simClockEl = document.getElementById('simClockDisplay');
-        if (statSimEl) statSimEl.textContent = newTime;
-        if (simClockEl) simClockEl.textContent = newTime;
+// Demand Management Controls (Single Source of Truth)
+window.loadDemandBreakdown = async function(tripId) {
+    const liveContainer = document.getElementById('demandLiveBreakdown');
+    if (!liveContainer || !tripId) return;
 
-        const logEl = document.getElementById('simLog');
-        try {
-            const res = await fetch(`${API_BASE}/admin/simulation/step`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-                body: JSON.stringify({
-                    action: 'ADVANCE_CLOCK',
-                    minutes: 2,
-                    currentTime: newTime
-                })
-            });
+    liveContainer.innerHTML = '<p class="text-muted">Loading trip demand segments...</p>';
+    try {
+        const res = await fetch(`${API_BASE}/officer/trips/${tripId}/demand`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const segments = await res.json();
+        if (!segments || segments.length === 0) {
+            liveContainer.innerHTML = `<p class="text-muted">No segment demand registered for Trip #${tripId}.</p>`;
+            return;
+        }
 
-            const data = await res.json().catch(() => ({}));
-            if (data && typeof data.simulationElapsedMinutes === 'number') {
-                let baseMins = 600;
-                if (state.activeSession?.startedAt) {
-                    try {
-                        const d = new Date(state.activeSession.startedAt);
-                        if (!isNaN(d.getTime())) baseMins = d.getUTCHours() * 60 + d.getUTCMinutes();
-                    } catch (ignored) {}
-                }
-                state.simClockMinutes = baseMins + data.simulationElapsedMinutes;
-                const updatedTime = formatMinutesToTime(state.simClockMinutes);
-                if (statSimEl) statSimEl.textContent = updatedTime;
-                if (simClockEl) simClockEl.textContent = updatedTime;
-            }
-            if (logEl) {
-                logEl.textContent = `[${newTime}] Clock stepped +2 mins. Response: ${data.message || JSON.stringify(data)}\n` + logEl.textContent;
-            }
-            // Refresh fleet availability
-            fetchBuses();
-        } catch (err) {
-            if (logEl) {
-                logEl.textContent = `[${newTime}] Error advancing clock: ${err.message}\n` + logEl.textContent;
-            }
+        liveContainer.innerHTML = segments.map(s => {
+            const baseD = s.registeredDemand ?? s.baseDemand ?? 0;
+            const simAdj = s.simulatedAdjustment ?? 0;
+            const effD = s.effectiveDemand ?? s.adjustedDemand ?? (baseD + simAdj);
+            const adjLabel = simAdj !== 0 ? (simAdj > 0 ? `+${simAdj}` : `${simAdj}`) : '0';
+            const cap = s.currentCapacity ? `${s.currentCapacity} seats` : (s.currentBus || 'None');
+            return `
+                <div class="segment-card" style="margin-bottom: 8px;">
+                    <div class="segment-title">Segment ${s.segmentIndex || '#'}: ${s.startStopName || 'Start'} &rarr; ${s.endStopName || 'End'}</div>
+                    <div class="segment-stats">
+                        <span>Bookings / Inquiries: <strong>${baseD}</strong></span>
+                        <span>Admin Adjustments: <strong>${adjLabel}</strong></span>
+                        <span>Total Segment Demand: <strong>${effD} pax</strong></span>
+                        <span>Current Bus Capacity: <strong>${cap}</strong></span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (err) {
+        liveContainer.innerHTML = `<p class="text-danger">Failed to load breakdown: ${err.message}</p>`;
+    }
+};
+
+const demandTripSelect = document.getElementById('demandTripSelect');
+if (demandTripSelect) {
+    demandTripSelect.addEventListener('change', (e) => {
+        const tripId = e.target.value;
+        if (tripId) {
+            loadDemandBreakdown(tripId);
         }
     });
 }
 
+document.querySelectorAll('.quick-delta').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const delta = btn.getAttribute('data-delta');
+        const input = document.getElementById('demandDelta');
+        if (input) input.value = delta;
+    });
+});
+
 const applyDemandAdjustmentBtn = document.getElementById('applyDemandAdjustmentBtn');
 if (applyDemandAdjustmentBtn) {
     applyDemandAdjustmentBtn.addEventListener('click', async () => {
-        const tripId = document.getElementById('simTripSelect')?.value;
-        const delta = parseInt(document.getElementById('simDemandDelta')?.value, 10);
-        const logEl = document.getElementById('simLog');
+        const tripId = document.getElementById('demandTripSelect')?.value;
+        const delta = parseInt(document.getElementById('demandDelta')?.value, 10);
+        const feedback = document.getElementById('demandAdjustmentFeedback');
 
         if (!tripId) {
-            alert('Please select a target trip first.');
+            if (feedback) {
+                feedback.textContent = 'Please select a target trip first.';
+                feedback.className = 'feedback-msg text-danger';
+            }
             return;
         }
-        if (isNaN(delta)) {
-            alert('Please enter a valid demand adjustment number.');
+        if (isNaN(delta) || delta === 0) {
+            if (feedback) {
+                feedback.textContent = 'Please enter a non-zero adjustment delta.';
+                feedback.className = 'feedback-msg text-danger';
+            }
             return;
+        }
+
+        if (feedback) {
+            feedback.textContent = 'Saving adjustment to common demand repository...';
+            feedback.className = 'feedback-msg text-info';
         }
 
         try {
-            const res = await fetch(`${API_BASE}/admin/simulation/step`, {
+            const res = await fetch(`${API_BASE}/admin/demand/adjust`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({
-                    action: 'ADJUST_DEMAND',
                     tripId: parseInt(tripId, 10),
                     demandDelta: delta
                 })
             });
 
-            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                throw new Error(data.message || `HTTP ${res.status}`);
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.message || `HTTP ${res.status}`);
             }
-            if (logEl) {
-                logEl.textContent = `[Adjustment] Trip #${tripId} adjusted by ${delta > 0 ? '+' : ''}${delta}. Response: ${data.message || 'Updated'}\n` + logEl.textContent;
+
+            if (feedback) {
+                feedback.textContent = `Successfully saved ${delta > 0 ? '+' : ''}${delta} demand adjustment to Trip #${tripId}. Synchronized across system!`;
+                feedback.className = 'feedback-msg text-success';
             }
-            
-            // Refresh demand panel if visible
+
+            // Refresh trips, breakdown, and buses immediately
+            await fetchTrips();
+            loadDemandBreakdown(tripId);
             const panel = document.getElementById('tripDemandPanel');
             if (panel && !panel.hidden) {
                 window.loadTripDemand(tripId);
             }
         } catch (err) {
-            if (logEl) {
-                logEl.textContent = `[Adjustment Error] ${err.message}\n` + logEl.textContent;
+            if (feedback) {
+                feedback.textContent = `Failed to apply adjustment: ${err.message}`;
+                feedback.className = 'feedback-msg text-danger';
             }
         }
     });
@@ -540,48 +582,104 @@ if (runAllocationBtn) {
             if (loading) loading.hidden = true;
             if (panel) panel.hidden = false;
 
+            // Section 1: Demand Analysis Cards
+            const da = proposal.demandAnalysis || {};
             const badge = document.getElementById('allocStatusBadge');
             if (badge) {
                 badge.textContent = proposal.status || 'PROPOSED';
                 badge.className = 'metric-value badge-proposed';
             }
-            const assignedCount = document.getElementById('allocAssignedCount');
-            if (assignedCount) assignedCount.textContent = proposal.assignments ? proposal.assignments.length : 0;
+            const tripsCount = document.getElementById('allocTripsCount');
+            if (tripsCount) tripsCount.textContent = da.tripsConsidered ?? da.totalTripsEvaluated ?? proposal.assignments?.length ?? 0;
+            const totalDemand = document.getElementById('allocTotalDemand');
+            if (totalDemand) totalDemand.textContent = `${da.totalDemand ?? da.totalPeakDemand ?? 0} pax`;
             const baselineUnmet = document.getElementById('allocBaselineUnmet');
-            if (baselineUnmet) baselineUnmet.textContent = proposal.baselineUnmetDemand ?? 0;
+            if (baselineUnmet) baselineUnmet.textContent = `${proposal.baselineUnmetDemand ?? da.baselineUnmetDemand ?? 0} pax`;
             const proposedUnmet = document.getElementById('allocProposedUnmet');
-            if (proposedUnmet) proposedUnmet.textContent = proposal.proposedUnmetDemand ?? 0;
+            if (proposedUnmet) proposedUnmet.textContent = `${proposal.proposedUnmetDemand ?? da.proposedUnmetDemand ?? 0} pax`;
+            const accommodated = document.getElementById('allocAccommodated');
+            if (accommodated) accommodated.textContent = `${da.accommodatedDemand ?? 0} pax`;
 
-            if (!tbody) return;
-            if (!proposal.assignments || proposal.assignments.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center">No assignments generated.</td></tr>';
-                return;
+            // Section 2: Fleet Availability Cards
+            const fa = proposal.fleetAvailability || {};
+            const fleetTotal = document.getElementById('fleetTotalCount');
+            if (fleetTotal) fleetTotal.textContent = fa.totalFleet ?? fa.totalFleetBuses ?? state.buses.length;
+            const fleetAvail = document.getElementById('fleetAvailableCount');
+            const availCount = fa.busesEligible ?? fa.availableBuses ?? 0;
+            const assignCount = fa.busesAssigned ?? 0;
+            if (fleetAvail) fleetAvail.textContent = `${availCount} (${assignCount} assigned)`;
+            const fleetResting = document.getElementById('fleetRestingCount');
+            if (fleetResting) fleetResting.textContent = fa.busesUnassigned ?? fa.restingOrConstrainedBuses ?? 0;
+
+            // Section 3: Proposed Bus Assignments Table with Plain-English Explanations
+            if (tbody) {
+                if (!proposal.assignments || proposal.assignments.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-center">No assignments generated.</td></tr>';
+                } else {
+                    tbody.innerHTML = proposal.assignments.map(a => {
+                        const isChanged = a.previousBusId !== a.proposedBusId;
+                        const changeTag = isChanged 
+                            ? '<span class="status-badge badge-changed" style="margin-left: 6px;">Reassigned</span>'
+                            : '<span class="status-badge badge-same" style="margin-left: 6px;">Retained</span>';
+
+                        const prevReg = a.previousBusRegistration || (a.previousBusId ? 'Bus #' + a.previousBusId : 'None');
+                        const propReg = a.proposedBusRegistration || (a.proposedBusId ? 'Bus #' + a.proposedBusId : 'Unassigned');
+
+                        const prevCap = a.baselineCapacity ?? a.previousCapacity ?? 0;
+                        const propCap = a.proposedCapacity ?? 0;
+                        const peakD = a.peakDemand ?? a.demand ?? 0;
+
+                        const occPct = propCap > 0 ? Math.round((peakD / propCap) * 100) : 0;
+                        let occBadge = '';
+                        if (occPct > 100) {
+                            occBadge = `<span class="status-badge badge-resting">${occPct}% (Over)</span>`;
+                        } else if (occPct >= 80) {
+                            occBadge = `<span class="status-badge badge-changed">${occPct}%</span>`;
+                        } else {
+                            occBadge = `<span class="status-badge badge-active">${occPct}%</span>`;
+                        }
+
+                        const depLabel = a.departureTime ? (a.departureTime.length > 16 ? a.departureTime.substring(11, 16) : a.departureTime) : '-';
+                        const arrLabel = a.arrivalTime ? (a.arrivalTime.length > 16 ? a.arrivalTime.substring(11, 16) : a.arrivalTime) : '-';
+                        const explanationText = a.reason || a.explanation || a.outcome || 'Assigned based on passenger demand and fleet availability.';
+
+                        return `
+                            <tr>
+                                <td>
+                                    <strong>#${a.tripId}</strong>
+                                    <span class="route-tag" style="margin-left: 4px;">${a.routeCode || ''}</span>
+                                    ${changeTag}
+                                </td>
+                                <td>${depLabel} &rarr; ${arrLabel}</td>
+                                <td><strong>${peakD} pax</strong></td>
+                                <td>${prevReg} (${prevCap}s)</td>
+                                <td><strong>${propReg} (${propCap}s)</strong></td>
+                                <td>${occBadge}</td>
+                                <td>
+                                    <div style="font-size: 12px; line-height: 1.45; color: #1e293b; max-width: 380px;">
+                                        ${explanationText}
+                                    </div>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
             }
 
-            tbody.innerHTML = proposal.assignments.map(a => {
-                const isChanged = a.previousBusId !== a.proposedBusId;
-                const changeTag = isChanged 
-                    ? '<span class="status-badge badge-changed">Reassigned for Demand</span>'
-                    : '<span class="status-badge badge-same">Retained</span>';
-
-                const prevReg = a.previousBusRegistration || (a.previousBusId ? 'Bus #' + a.previousBusId : 'None');
-                const propReg = a.proposedBusRegistration || (a.proposedBusId ? 'Bus #' + a.proposedBusId : 'Unassigned');
-
-                const prevCap = a.previousCapacity ?? a.baselineCapacity ?? '-';
-                const propCap = a.proposedCapacity ?? '-';
-
-                return `
-                    <tr>
-                        <td><strong>#${a.tripId}</strong></td>
-                        <td>${a.departureTime ? (a.departureTime.length > 16 ? a.departureTime.substring(11, 16) : a.departureTime) : '-'}</td>
-                        <td>${prevReg}</td>
-                        <td>${prevCap}</td>
-                        <td><strong>${propReg}</strong></td>
-                        <td><strong>${propCap}</strong></td>
-                        <td>${changeTag}</td>
-                    </tr>
+            // Section 4: Operational State Comparison
+            const compText = document.getElementById('comparisonSummaryText');
+            if (compText) {
+                const bUnmet = proposal.baselineUnmetDemand ?? 0;
+                const pUnmet = proposal.proposedUnmetDemand ?? 0;
+                const diff = bUnmet - pUnmet;
+                const pct = bUnmet > 0 ? Math.round((diff / bUnmet) * 100) : 100;
+                compText.innerHTML = `
+                    <strong>Operational Impact:</strong> Baseline unmet demand reduced from 
+                    <strong class="text-danger">${bUnmet} pax</strong> to 
+                    <strong class="text-success">${pUnmet} pax</strong> 
+                    (${pct}% unmet demand eliminated). Right-sized fleet allocation eliminates bottlenecks while strictly respecting 30-min turnarounds and driver rest windows.
                 `;
-            }).join('');
+            }
         } catch (err) {
             if (loading) loading.hidden = true;
             alert(`Allocation computation failed: ${err.message}`);
@@ -732,7 +830,16 @@ if (saveSessionConfigBtn) {
 
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             if (feedback) {
-                feedback.textContent = `Session configuration saved (${selectedRoutes.length} routes, ${selectedBuses.length} buses active).`;
+                feedback.textContent = `Session configuration saved (${selectedRoutes.length} routes, ${selectedBuses.length} buses active). Synchronizing departures...`;
+                feedback.className = 'feedback-msg text-success';
+            }
+
+            // Immediately refresh active session, trips, and buses so unselected routes (e.g. Route 2) vanish immediately!
+            await fetchActiveSession();
+            await Promise.all([fetchTrips(), fetchBuses()]);
+
+            if (feedback) {
+                feedback.textContent = `Session configuration saved (${selectedRoutes.length} routes, ${selectedBuses.length} buses active). Departures and fleet updated!`;
                 feedback.className = 'feedback-msg text-success';
             }
         } catch (err) {

@@ -99,4 +99,57 @@ public class JourneyServiceTest {
         assertEquals("REASSIGNED", result.outcomes().get(0).type());
         assertEquals(0, result.afterTotal().unmet());
     }
+
+    @Test
+    public void testAllocationEngineSurgeDemandExceedingCapacity() {
+        Route r1 = new Route(1, "R1", "Secunderabad-Airport", List.of(1L, 2L, 3L));
+
+        // Only one 50-seater bus available, but demand is 75 passengers
+        Input input = new Input(
+                t("07:00"),
+                List.of(r1),
+                List.of(new Bus(1, "BUS-50", 50, "ACTIVE", 15)),
+                List.of(new Trip(10, 1, t("08:00"), t("09:00"), null, 0)),
+                List.of(new Journey(10, 1, 3, 75)),
+                List.of()
+        );
+
+        Result result = AllocationEngine.allocate(input);
+        assertNotNull(result);
+        assertEquals(1L, result.outcomes().get(0).proposedBusId(), "Bus assigned to best accommodate load");
+        assertTrue(result.afterTotal().unmet() > 0, "Unmet demand should be identified when demand exceeds bus capacity");
+        assertEquals(50, result.outcomes().get(0).reason().contains("50") ? 50 : 0);
+        assertTrue(result.outcomes().get(0).reason().contains("75") || result.outcomes().get(0).reason().contains("occupancy"),
+                "Explanation must mention load or occupancy details");
+    }
+
+    @Test
+    public void testAllocationEngineTurnaroundRestConstraint() {
+        Route r1 = new Route(1, "R1", "Route-1", List.of(1L, 2L));
+
+        // Trip 1 arrives at 09:00. Bus requires 30 min rest, so not available until 09:30.
+        // Trip 2 departs at 09:15. Overlaps with rest window!
+        Input input = new Input(
+                t("07:00"),
+                List.of(r1),
+                List.of(new Bus(1, "BUS-1", 50, "ACTIVE", 30)),
+                List.of(
+                        new Trip(10, 1, t("08:00"), t("09:00"), 1L, 50),
+                        new Trip(20, 1, t("09:15"), t("10:15"), null, 0)
+                ),
+                List.of(
+                        new Journey(10, 1, 2, 20),
+                        new Journey(20, 1, 2, 25)
+                ),
+                List.of()
+        );
+
+        Result result = AllocationEngine.allocate(input);
+        assertNotNull(result);
+        // Only one bus can take at most one of the overlapping trips
+        long assignedCount = result.outcomes().stream().filter(o -> o.proposedBusId() != null).count();
+        assertEquals(1, assignedCount, "Bus cannot be assigned to second trip due to mandatory 30-min rest period");
+        assertTrue(result.outcomes().stream().anyMatch(o -> "UNASSIGNED".equals(o.type())),
+                "Conflicting trip must be UNASSIGNED when no free bus is available");
+    }
 }

@@ -68,7 +68,58 @@ public class OfficerService {
     // ----------------------------------------------------------------
 
     public List<Map<String, Object>> getAllBuses() {
-        return repo.findAllBuses();
+        return getAllBuses(null);
+    }
+
+    public List<Map<String, Object>> getAllBuses(LocalTime referenceTime) {
+        List<Map<String, Object>> buses = repo.findAllBuses();
+        LocalTime now = referenceTime != null ? referenceTime : LocalTime.now();
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> b : buses) {
+            Map<String, Object> bus = new LinkedHashMap<>(b);
+            String status = String.valueOf(b.get("status"));
+            LocalTime restStart = null;
+            LocalTime restEnd = null;
+            if (b.get("restStart") != null) {
+                try {
+                    String s = b.get("restStart").toString();
+                    if (s.length() == 5) s = s + ":00";
+                    restStart = LocalTime.parse(s);
+                } catch (Exception ignored) {}
+            }
+            if (b.get("restEnd") != null) {
+                try {
+                    String s = b.get("restEnd").toString();
+                    if (s.length() == 5) s = s + ":00";
+                    restEnd = LocalTime.parse(s);
+                } catch (Exception ignored) {}
+            }
+
+            boolean available = "ACTIVE".equalsIgnoreCase(status);
+            String reason = "Available";
+
+            if (!"ACTIVE".equalsIgnoreCase(status)) {
+                available = false;
+                reason = "Maintenance / Inactive";
+            } else if (restStart != null && restEnd != null) {
+                boolean inRest;
+                if (restStart.isBefore(restEnd)) {
+                    inRest = !now.isBefore(restStart) && now.isBefore(restEnd);
+                } else {
+                    inRest = !now.isBefore(restStart) || now.isBefore(restEnd);
+                }
+                if (inRest) {
+                    available = false;
+                    reason = "Rest Window (" + restStart + " - " + restEnd + ")";
+                }
+            }
+
+            bus.put("available", available);
+            bus.put("availabilityReason", reason);
+            result.add(bus);
+        }
+        return result;
     }
 
     // ----------------------------------------------------------------
@@ -89,7 +140,8 @@ public class OfficerService {
     // ----------------------------------------------------------------
 
     public List<Map<String, Object>> getTrips(LocalDate serviceDate) {
-        return repo.findScheduledTrips(serviceDate == null ? repo.findActiveSessionDate() : serviceDate);
+        Long sessionId = repo.findActiveSessionId();
+        return repo.findScheduledTrips(sessionId, serviceDate == null ? repo.findActiveSessionDate() : serviceDate);
     }
 
     // ----------------------------------------------------------------
@@ -104,12 +156,14 @@ public class OfficerService {
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> row : rawRows) {
             int registered = toInt(row.get("registeredDemand"));
-            int simulated  = toInt(row.get("simulatedAdjustment"));
-            int effective  = Math.max(0, registered + simulated);
+            int search = toInt(row.get("searchIntentDemand"));
+            int simulated = toInt(row.get("simulatedAdjustment"));
+            int effective = Math.max(0, registered + search + simulated);
 
             Map<String, Object> enriched = new LinkedHashMap<>(row);
             enriched.put("effectiveDemand", effective);
             enriched.put("baseDemand", registered);
+            enriched.put("searchDemand", search);
             enriched.put("adjustedDemand", effective);
             result.add(enriched);
         }
@@ -210,6 +264,23 @@ public class OfficerService {
         response.put("assignments", repo.findAllocationAssignments(proposedRunId));
         response.put("baselineSegments", repo.findSegmentResults(baselineRunId));
         response.put("proposedSegments", repo.findSegmentResults(proposedRunId));
+
+        // Presentation-ready Demand Analysis & Fleet Availability Summaries
+        Map<String, Object> demandAnalysis = new LinkedHashMap<>();
+        demandAnalysis.put("totalDemand", result.afterTotal().demand());
+        demandAnalysis.put("accommodatedDemand", result.afterTotal().accommodated());
+        demandAnalysis.put("unmetDemand", result.afterTotal().unmet());
+        demandAnalysis.put("routesConsidered", input.routes().size());
+        demandAnalysis.put("tripsConsidered", input.trips().size());
+
+        Map<String, Object> fleetAvailability = new LinkedHashMap<>();
+        fleetAvailability.put("totalFleet", repo.findAllBuses().size());
+        fleetAvailability.put("busesEligible", result.busesConsidered());
+        fleetAvailability.put("busesAssigned", result.busesAssigned());
+        fleetAvailability.put("busesUnassigned", result.busesLeftUnassigned());
+
+        response.put("demandAnalysis", demandAnalysis);
+        response.put("fleetAvailability", fleetAvailability);
         return response;
     }
 
@@ -255,8 +326,42 @@ public class OfficerService {
     }
 
     // ----------------------------------------------------------------
-    // Simulation
+    // Demand Adjustments
     // ----------------------------------------------------------------
+
+    @Transactional
+    public Map<String, Object> adjustDemand(long tripId, int demandDelta) {
+        Long sessionId = repo.findActiveSessionId();
+        if (sessionId == null) {
+            throw new IllegalStateException("No active planning session.");
+        }
+        Long routeId = repo.findRouteIdForTrip(tripId);
+        if (routeId == null) {
+            throw new IllegalArgumentException("Trip " + tripId + " not found.");
+        }
+
+        List<Map<String, Object>> existingSegments = repo.findSegmentDemandForTrip(tripId, sessionId);
+        if (existingSegments.isEmpty()) {
+            throw new IllegalArgumentException("Trip " + tripId + " has no stops configured.");
+        }
+
+        List<Long> startStops = new ArrayList<>();
+        List<Long> endStops = new ArrayList<>();
+        for (Map<String, Object> seg : existingSegments) {
+            startStops.add(toLong(seg.get("startStopId")));
+            endStops.add(toLong(seg.get("endStopId")));
+        }
+
+        repo.saveDemandAdjustment(sessionId, routeId, startStops, endStops, demandDelta);
+
+        return Map.of(
+                "status", "SUCCESS",
+                "tripId", tripId,
+                "routeId", routeId,
+                "demandDelta", demandDelta,
+                "message", String.format("Common demand updated: %+d passengers applied to Trip #%d across all route segments.", demandDelta, tripId)
+        );
+    }
 
     @Transactional
     public int advanceClock(int minutes) {
@@ -377,6 +482,23 @@ public class OfficerService {
                     toLong(jr.get("boardingStopId")),
                     toLong(jr.get("destinationStopId")),
                     toInt(jr.get("passengerCount"))));
+        }
+
+        // Include Administrative & Common Demand Adjustments into the Engine
+        List<Map<String, Object>> adjustments = repo.findSimulationAdjustments(sessionId);
+        for (Map<String, Object> adj : adjustments) {
+            long routeId = toLong(adj.get("routeId"));
+            long startStopId = toLong(adj.get("startStopId"));
+            long endStopId = toLong(adj.get("endStopId"));
+            int delta = toInt(adj.get("totalDelta"));
+            if (delta != 0) {
+                for (com.vaahansetu.allocation.AllocationModels.Trip t : trips) {
+                    if (t.routeId() == routeId) {
+                        journeys.add(new com.vaahansetu.allocation.AllocationModels.Journey(
+                                t.id(), startStopId, endStopId, delta));
+                    }
+                }
+            }
         }
 
         // Commitments (excluding trips being reallocated)
