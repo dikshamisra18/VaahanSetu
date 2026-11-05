@@ -308,8 +308,10 @@ public class OfficerRepository {
                        t.departure_time            AS "departureTime",
                        aa.previous_bus_id          AS "previousBusId",
                        b_prev.registration_number  AS "previousBusRegistration",
+                       b_prev.capacity             AS "previousCapacity",
                        aa.proposed_bus_id          AS "proposedBusId",
                        b_next.registration_number  AS "proposedBusRegistration",
+                       b_next.capacity             AS "proposedCapacity",
                        aa.assignment_type::text    AS "assignmentType",
                        aa.reason
                 FROM allocation_assignments aa

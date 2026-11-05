@@ -33,25 +33,34 @@ function getAuthHeaders() {
 }
 
 function checkAuth() {
+    const loginSection = document.getElementById('loginSection');
+    const adminDashboard = document.getElementById('adminDashboard');
+    const logoutBtn = document.getElementById('logoutBtn');
+
     if (!state.token || !state.user) {
-        window.location.href = 'index.html';
+        if (loginSection) loginSection.hidden = false;
+        if (adminDashboard) adminDashboard.hidden = true;
+        if (logoutBtn) logoutBtn.hidden = true;
         return;
     }
-    // Update user profile display
+
+    showDashboard();
+}
+
+function showDashboard() {
+    const loginSection = document.getElementById('loginSection');
+    const adminDashboard = document.getElementById('adminDashboard');
+    const logoutBtn = document.getElementById('logoutBtn');
+
+    if (loginSection) loginSection.hidden = true;
+    if (adminDashboard) adminDashboard.hidden = false;
+    if (logoutBtn) logoutBtn.hidden = false;
+
+    // Update user profile display if present
     const userRoleEl = document.getElementById('userRole');
     const userAvatarEl = document.getElementById('userAvatar');
-    if (userRoleEl) userRoleEl.textContent = state.user.role || 'ADMIN';
-    if (userAvatarEl) userAvatarEl.textContent = (state.user.username || 'A').substring(0, 1).toUpperCase();
-
-    // Setup Logout
-    const logoutBtn = document.getElementById('logoutBtn');
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-            sessionStorage.removeItem('vaahan_auth_token');
-            sessionStorage.removeItem('vaahan_user');
-            window.location.href = 'index.html';
-        });
-    }
+    if (userRoleEl) userRoleEl.textContent = state.user?.role || 'ADMIN';
+    if (userAvatarEl) userAvatarEl.textContent = (state.user?.username || 'A').substring(0, 1).toUpperCase();
 
     // Setup Navigation Tabs
     initTabs();
@@ -60,12 +69,95 @@ function checkAuth() {
     initDashboard();
 }
 
+// Login Form Handling
+const adminLoginForm = document.getElementById('adminLoginForm');
+if (adminLoginForm) {
+    adminLoginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('adminUsername')?.value?.trim();
+        const password = document.getElementById('adminPassword')?.value;
+        const feedback = document.getElementById('loginFeedback');
+        const submitBtn = document.getElementById('loginSubmitBtn');
+
+        if (!username || !password) {
+            if (feedback) {
+                feedback.textContent = 'Please enter both username and password.';
+                feedback.className = 'feedback-msg text-danger';
+            }
+            return;
+        }
+
+        if (feedback) {
+            feedback.textContent = 'Authenticating with server...';
+            feedback.className = 'feedback-msg text-info';
+        }
+        if (submitBtn) submitBtn.disabled = true;
+
+        try {
+            const res = await fetch(`${API_BASE}/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.message || `Login failed (HTTP ${res.status})`);
+            }
+
+            const token = data.token || data.accessToken || data.jwt;
+            const user = {
+                userId: data.userId,
+                username: data.username || username,
+                fullName: data.fullName,
+                role: data.role || 'ADMIN'
+            };
+
+            sessionStorage.setItem('vaahan_auth_token', token);
+            sessionStorage.setItem('vaahan_user', JSON.stringify(user));
+            state.token = token;
+            state.user = user;
+
+            if (feedback) feedback.textContent = '';
+            showDashboard();
+        } catch (err) {
+            if (feedback) {
+                feedback.textContent = `Login failed: ${err.message}`;
+                feedback.className = 'feedback-msg text-danger';
+            }
+        } finally {
+            if (submitBtn) submitBtn.disabled = false;
+        }
+    });
+}
+
+// Setup Logout
+const logoutBtn = document.getElementById('logoutBtn');
+if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+        sessionStorage.removeItem('vaahan_auth_token');
+        sessionStorage.removeItem('vaahan_user');
+        state.token = '';
+        state.user = null;
+        const loginSection = document.getElementById('loginSection');
+        const adminDashboard = document.getElementById('adminDashboard');
+        if (loginSection) loginSection.hidden = false;
+        if (adminDashboard) adminDashboard.hidden = true;
+        logoutBtn.hidden = true;
+        const feedback = document.getElementById('loginFeedback');
+        if (feedback) {
+            feedback.textContent = 'Signed out successfully.';
+            feedback.className = 'feedback-msg text-info';
+        }
+    });
+}
+
 function initTabs() {
-    const tabBtns = document.querySelectorAll('.nav-tab');
+    const tabBtns = document.querySelectorAll('.tab-btn, .nav-tab');
     const tabContents = document.querySelectorAll('.tab-content');
 
     tabBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.onclick = () => {
             tabBtns.forEach(b => b.classList.remove('active'));
             tabContents.forEach(c => c.classList.remove('active'));
 
@@ -73,7 +165,7 @@ function initTabs() {
             const target = btn.getAttribute('data-tab');
             const targetSection = document.getElementById(target);
             if (targetSection) targetSection.classList.add('active');
-        });
+        };
     });
 }
 
@@ -116,8 +208,10 @@ async function fetchActiveSession() {
                 const elapsed = typeof session.simulationElapsedMinutes === 'number' ? session.simulationElapsedMinutes : 0;
                 state.simClockMinutes = baseMinutes + elapsed;
                 const newTime = formatMinutesToTime(state.simClockMinutes);
-                document.getElementById('statSimTime').textContent = newTime;
-                document.getElementById('simClockDisplay').textContent = newTime;
+                const statSimEl = document.getElementById('statSimTime');
+                const simClockEl = document.getElementById('simClockDisplay');
+                if (statSimEl) statSimEl.textContent = newTime;
+                if (simClockEl) simClockEl.textContent = newTime;
             }
         }
     } catch (err) {
@@ -128,7 +222,7 @@ async function fetchActiveSession() {
 // Fetch Buses
 async function fetchBuses() {
     const tbody = document.querySelector('#busesTable tbody');
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center">Loading fleet data...</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center">Loading fleet data...</td></tr>';
     try {
         const res = await fetch(`${API_BASE}/officer/buses?time=${formatMinutesToTime(state.simClockMinutes)}`, {
             headers: getAuthHeaders()
@@ -136,8 +230,10 @@ async function fetchBuses() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const buses = await res.json();
         state.buses = buses;
-        document.getElementById('statBusCount').textContent = buses.length;
+        const statBusEl = document.getElementById('statBusCount');
+        if (statBusEl) statBusEl.textContent = buses.length;
 
+        if (!tbody) return;
         if (buses.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center">No buses registered.</td></tr>';
             return;
@@ -162,7 +258,7 @@ async function fetchBuses() {
             `;
         }).join('');
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">Error loading buses: ${err.message}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">Error loading buses: ${err.message}</td></tr>`;
     }
 }
 
@@ -175,7 +271,8 @@ async function fetchRoutes() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const routes = await res.json();
         state.routes = routes;
-        document.getElementById('statRouteCount').textContent = routes.length;
+        const statRouteEl = document.getElementById('statRouteCount');
+        if (statRouteEl) statRouteEl.textContent = routes.length;
     } catch (err) {
         console.error('Failed to fetch routes:', err);
     }
@@ -193,7 +290,7 @@ async function fetchTrips() {
     const tbody = document.querySelector('#tripsTable tbody');
     const simTripSelect = document.getElementById('simTripSelect');
 
-    tbody.innerHTML = '<tr><td colspan="7" class="text-center">Loading scheduled departures...</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="text-center">Loading scheduled departures...</td></tr>';
 
     try {
         const url = dateInput ? `${API_BASE}/officer/trips?date=${encodeURIComponent(dateInput)}` : `${API_BASE}/officer/trips`;
@@ -203,18 +300,22 @@ async function fetchTrips() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const trips = await res.json();
         state.trips = trips;
-        document.getElementById('statTripCount').textContent = trips.length;
+        const statTripEl = document.getElementById('statTripCount');
+        if (statTripEl) statTripEl.textContent = trips.length;
 
         // Populate Sim Trip select
-        simTripSelect.innerHTML = '<option value="">Select trip</option>' +
-            trips.map(t => {
-                const timeLabel = t.departureTime ? (t.departureTime.length > 16 ? t.departureTime.substring(11, 16) : t.departureTime) : 'Dep';
-                return `<option value="${t.tripId}">Trip #${t.tripId} (${t.routeCode || 'Route'} @ ${timeLabel})</option>`;
-            }).join('');
-        if (trips.length > 0 && !simTripSelect.value) {
-            simTripSelect.selectedIndex = 1;
+        if (simTripSelect) {
+            simTripSelect.innerHTML = '<option value="">Select trip</option>' +
+                trips.map(t => {
+                    const timeLabel = t.departureTime ? (t.departureTime.length > 16 ? t.departureTime.substring(11, 16) : t.departureTime) : 'Dep';
+                    return `<option value="${t.tripId}">Trip #${t.tripId} (${t.routeCode || 'Route'} @ ${timeLabel})</option>`;
+                }).join('');
+            if (trips.length > 0 && !simTripSelect.value) {
+                simTripSelect.selectedIndex = 1;
+            }
         }
 
+        if (!tbody) return;
         if (trips.length === 0) {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center">No trips scheduled for this date.</td></tr>';
             return;
@@ -242,20 +343,26 @@ async function fetchTrips() {
             `;
         }).join('');
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">Error loading trips: ${err.message}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">Error loading trips: ${err.message}</td></tr>`;
     }
 }
 
 // Load Segment Demand for Trip Modal/Panel
 window.loadTripDemand = async function(tripId) {
-    const details = document.getElementById('demandDetails');
+    const panel = document.getElementById('tripDemandPanel');
+    const details = document.getElementById('tripDemandDetails') || document.getElementById('demandDetails');
+    if (!details) return;
+
+    if (panel) panel.hidden = false;
     details.innerHTML = '<div class="text-muted">Loading segment demand...</div>';
 
     // Switch to Trips tab
-    document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-btn, .nav-tab').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.querySelector('[data-tab="tab-trips"]').classList.add('active');
-    document.getElementById('tab-trips').classList.add('active');
+    const tripsBtn = document.querySelector('[data-tab="tab-trips"]');
+    if (tripsBtn) tripsBtn.classList.add('active');
+    const tripsSection = document.getElementById('tab-trips');
+    if (tripsSection) tripsSection.classList.add('active');
 
     try {
         const res = await fetch(`${API_BASE}/officer/trips/${tripId}/demand`, {
@@ -264,221 +371,281 @@ window.loadTripDemand = async function(tripId) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const demand = await res.json();
 
-        if (demand.length === 0) {
+        if (!demand || demand.length === 0) {
             details.innerHTML = `<p class="text-muted">No segment demand registered for Trip #${tripId}.</p>`;
             return;
         }
 
-        details.innerHTML = `<h4>Demand Profile: Trip #${tripId} (${demand[0]?.routeCode || 'Route'})</h4>` +
-        demand.map(d => {
-            const baseD = d.registeredDemand ?? d.baseDemand ?? 0;
-            const simAdj = d.simulatedAdjustment ?? 0;
-            const effD = d.effectiveDemand ?? d.adjustedDemand ?? baseD;
-            const adjLabel = simAdj !== 0 ? (simAdj > 0 ? `+${simAdj}` : `${simAdj}`) : '0';
-            return `
-                <div class="segment-card">
-                    <div class="segment-name">${d.segmentIndex || '#'}. ${d.startStopName || 'Start'} &rarr; ${d.endStopName || 'End'}</div>
-                    <div class="segment-metrics">
-                        <span>Base Demand: <strong>${baseD}</strong></span>
-                        <span>Adjustment: <strong>${adjLabel}</strong></span>
-                        <span>Effective Demand: <strong>${effD}</strong></span>
-                        <span>Current Bus Cap: <strong>${d.currentCapacity || 'None'}</strong></span>
+        const routeTitle = demand[0]?.routeCode || 'Route';
+        details.innerHTML = `<h4>Demand Profile: Trip #${tripId} (${routeTitle})</h4>` +
+            demand.map(d => {
+                const baseD = d.registeredDemand ?? d.baseDemand ?? 0;
+                const simAdj = d.simulatedAdjustment ?? 0;
+                const effD = d.effectiveDemand ?? d.adjustedDemand ?? baseD;
+                const adjLabel = simAdj !== 0 ? (simAdj > 0 ? `+${simAdj}` : `${simAdj}`) : '0';
+                const cap = d.currentCapacity ? `${d.currentCapacity} seats` : (d.currentBus && d.currentBus !== 'UNASSIGNED' ? d.currentBus : 'None');
+                return `
+                    <div class="segment-card">
+                        <div class="segment-name">${d.segmentIndex || '#'}. ${d.startStopName || 'Start'} &rarr; ${d.endStopName || 'End'}</div>
+                        <div class="segment-metrics">
+                            <span>Base Demand: <strong>${baseD}</strong></span>
+                            <span>Adjustment: <strong>${adjLabel}</strong></span>
+                            <span>Effective Demand: <strong>${effD}</strong></span>
+                            <span>Current Bus Cap: <strong>${cap}</strong></span>
+                        </div>
                     </div>
-                </div>
-            `;
-        }).join('');
+                `;
+            }).join('');
+
+        if (panel) {
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
     } catch (err) {
         details.innerHTML = `<span class="text-danger">Failed to load demand: ${err.message}</span>`;
     }
 };
 
 // Simulation Controls
-document.getElementById('stepClockBtn').addEventListener('click', async () => {
-    state.simClockMinutes += 2;
-    const newTime = formatMinutesToTime(state.simClockMinutes);
-    document.getElementById('statSimTime').textContent = newTime;
-    document.getElementById('simClockDisplay').textContent = newTime;
+const stepClockBtn = document.getElementById('stepClockBtn');
+if (stepClockBtn) {
+    stepClockBtn.addEventListener('click', async () => {
+        state.simClockMinutes += 2;
+        const newTime = formatMinutesToTime(state.simClockMinutes);
+        const statSimEl = document.getElementById('statSimTime');
+        const simClockEl = document.getElementById('simClockDisplay');
+        if (statSimEl) statSimEl.textContent = newTime;
+        if (simClockEl) simClockEl.textContent = newTime;
 
-    const logEl = document.getElementById('simLog');
-    try {
-        const res = await fetch(`${API_BASE}/admin/simulation/step`, {
-            method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({
-                action: 'ADVANCE_CLOCK',
-                minutes: 2,
-                currentTime: newTime
-            })
-        });
+        const logEl = document.getElementById('simLog');
+        try {
+            const res = await fetch(`${API_BASE}/admin/simulation/step`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                    action: 'ADVANCE_CLOCK',
+                    minutes: 2,
+                    currentTime: newTime
+                })
+            });
 
-        const data = await res.json().catch(() => ({}));
-        if (data && typeof data.simulationElapsedMinutes === 'number') {
-            let baseMins = 600;
-            if (state.activeSession?.startedAt) {
-                try {
-                    const d = new Date(state.activeSession.startedAt);
-                    if (!isNaN(d.getTime())) baseMins = d.getUTCHours() * 60 + d.getUTCMinutes();
-                } catch (ignored) {}
+            const data = await res.json().catch(() => ({}));
+            if (data && typeof data.simulationElapsedMinutes === 'number') {
+                let baseMins = 600;
+                if (state.activeSession?.startedAt) {
+                    try {
+                        const d = new Date(state.activeSession.startedAt);
+                        if (!isNaN(d.getTime())) baseMins = d.getUTCHours() * 60 + d.getUTCMinutes();
+                    } catch (ignored) {}
+                }
+                state.simClockMinutes = baseMins + data.simulationElapsedMinutes;
+                const updatedTime = formatMinutesToTime(state.simClockMinutes);
+                if (statSimEl) statSimEl.textContent = updatedTime;
+                if (simClockEl) simClockEl.textContent = updatedTime;
             }
-            state.simClockMinutes = baseMins + data.simulationElapsedMinutes;
-            const updatedTime = formatMinutesToTime(state.simClockMinutes);
-            document.getElementById('statSimTime').textContent = updatedTime;
-            document.getElementById('simClockDisplay').textContent = updatedTime;
+            if (logEl) {
+                logEl.textContent = `[${newTime}] Clock stepped +2 mins. Response: ${data.message || JSON.stringify(data)}\n` + logEl.textContent;
+            }
+            // Refresh fleet availability
+            fetchBuses();
+        } catch (err) {
+            if (logEl) {
+                logEl.textContent = `[${newTime}] Error advancing clock: ${err.message}\n` + logEl.textContent;
+            }
         }
-        logEl.textContent = `[${newTime}] Clock stepped +2 mins. Response: ${data.message || JSON.stringify(data)}\n` + logEl.textContent;
-        // Refresh fleet availability
-        fetchBuses();
-    } catch (err) {
-        logEl.textContent = `[${newTime}] Error advancing clock: ${err.message}\n` + logEl.textContent;
-    }
-});
+    });
+}
 
-document.getElementById('applyDemandAdjustmentBtn').addEventListener('click', async () => {
-    const tripId = document.getElementById('simTripSelect').value;
-    const delta = parseInt(document.getElementById('simDemandDelta').value, 10);
-    const logEl = document.getElementById('simLog');
+const applyDemandAdjustmentBtn = document.getElementById('applyDemandAdjustmentBtn');
+if (applyDemandAdjustmentBtn) {
+    applyDemandAdjustmentBtn.addEventListener('click', async () => {
+        const tripId = document.getElementById('simTripSelect')?.value;
+        const delta = parseInt(document.getElementById('simDemandDelta')?.value, 10);
+        const logEl = document.getElementById('simLog');
 
-    if (!tripId) {
-        alert('Please select a target trip first.');
-        return;
-    }
-
-    try {
-        const res = await fetch(`${API_BASE}/admin/simulation/step`, {
-            method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({
-                action: 'ADJUST_DEMAND',
-                tripId: parseInt(tripId, 10),
-                demandDelta: delta
-            })
-        });
-
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            throw new Error(data.message || `HTTP ${res.status}`);
+        if (!tripId) {
+            alert('Please select a target trip first.');
+            return;
         }
-        logEl.textContent = `[Adjustment] Trip #${tripId} adjusted by ${delta > 0 ? '+' : ''}${delta}. Response: ${data.message || 'Updated'}\n` + logEl.textContent;
-        window.loadTripDemand(tripId);
-    } catch (err) {
-        logEl.textContent = `[Adjustment Error] ${err.message}\n` + logEl.textContent;
-    }
-});
-
-// Allocation Engine Controls
-document.getElementById('runAllocationBtn').addEventListener('click', async () => {
-    const loading = document.getElementById('allocationLoading');
-    const panel = document.getElementById('allocationResultsPanel');
-    const tbody = document.querySelector('#allocationTable tbody');
-    const feedback = document.getElementById('approvalFeedback');
-    feedback.textContent = '';
-
-    loading.hidden = false;
-    panel.hidden = true;
-
-    try {
-        const dateInput = document.getElementById('tripDateFilter')?.value
-            || (state.activeSession?.startedAt ? state.activeSession.startedAt.substring(0, 10) : '');
-        const sessionId = state.activeSession?.sessionId || 1;
-
-        const res = await fetch(`${API_BASE}/officer/allocations`, {
-            method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({
-                sessionId: sessionId,
-                serviceDate: dateInput
-            })
-        });
-
-        if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            throw new Error(errData.message || `HTTP ${res.status}`);
-        }
-        const proposal = await res.json();
-        state.lastAllocationProposal = proposal;
-
-        loading.hidden = true;
-        panel.hidden = false;
-
-        document.getElementById('allocStatusBadge').textContent = proposal.status || 'PROPOSED';
-        document.getElementById('allocAssignedCount').textContent = proposal.assignments ? proposal.assignments.length : 0;
-        document.getElementById('allocBaselineUnmet').textContent = proposal.baselineUnmetDemand ?? 0;
-        document.getElementById('allocProposedUnmet').textContent = proposal.proposedUnmetDemand ?? 0;
-
-        if (!proposal.assignments || proposal.assignments.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center">No assignments generated.</td></tr>';
+        if (isNaN(delta)) {
+            alert('Please enter a valid demand adjustment number.');
             return;
         }
 
-        tbody.innerHTML = proposal.assignments.map(a => {
-            const isChanged = a.previousBusId !== a.proposedBusId;
-            const changeTag = isChanged 
-                ? '<span class="status-badge badge-changed">Reassigned for Demand</span>'
-                : '<span class="status-badge badge-same">Retained</span>';
+        try {
+            const res = await fetch(`${API_BASE}/admin/simulation/step`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                    action: 'ADJUST_DEMAND',
+                    tripId: parseInt(tripId, 10),
+                    demandDelta: delta
+                })
+            });
 
-            const prevReg = a.previousBusRegistration || (a.previousBusId ? 'Bus #' + a.previousBusId : 'None');
-            const propReg = a.proposedBusRegistration || (a.proposedBusId ? 'Bus #' + a.proposedBusId : 'Unassigned');
-
-            return `
-                <tr>
-                    <td><strong>#${a.tripId}</strong></td>
-                    <td>${a.departureTime ? (a.departureTime.length > 16 ? a.departureTime.substring(11, 16) : a.departureTime) : '-'}</td>
-                    <td>${prevReg}</td>
-                    <td>${a.previousCapacity ?? a.baselineCapacity ?? '-'}</td>
-                    <td><strong>${propReg}</strong></td>
-                    <td><strong>${a.proposedCapacity ?? '-'}</strong></td>
-                    <td>${changeTag}</td>
-                </tr>
-            `;
-        }).join('');
-    } catch (err) {
-        loading.hidden = true;
-        alert(`Allocation computation failed: ${err.message}`);
-    }
-});
-
-document.getElementById('approveAllocationBtn').addEventListener('click', async () => {
-    if (!state.lastAllocationProposal || !state.lastAllocationProposal.allocationRunId) {
-        alert('No active allocation proposal to approve. Please run allocation first.');
-        return;
-    }
-
-    const feedback = document.getElementById('approvalFeedback');
-    feedback.textContent = 'Persisting approved allocation to database...';
-    feedback.className = 'feedback-msg text-info';
-
-    try {
-        const res = await fetch(`${API_BASE}/officer/allocations/approve`, {
-            method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({
-                allocationRunId: state.lastAllocationProposal.allocationRunId
-            })
-        });
-
-        if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            throw new Error(errData.message || `HTTP ${res.status}`);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.message || `HTTP ${res.status}`);
+            }
+            if (logEl) {
+                logEl.textContent = `[Adjustment] Trip #${tripId} adjusted by ${delta > 0 ? '+' : ''}${delta}. Response: ${data.message || 'Updated'}\n` + logEl.textContent;
+            }
+            
+            // Refresh demand panel if visible
+            const panel = document.getElementById('tripDemandPanel');
+            if (panel && !panel.hidden) {
+                window.loadTripDemand(tripId);
+            }
+        } catch (err) {
+            if (logEl) {
+                logEl.textContent = `[Adjustment Error] ${err.message}\n` + logEl.textContent;
+            }
         }
-        const result = await res.json();
+    });
+}
 
-        feedback.textContent = `Allocation #${state.lastAllocationProposal.allocationRunId} successfully APPROVED and persisted into operational schedule!`;
-        feedback.className = 'feedback-msg text-success';
-        document.getElementById('allocStatusBadge').textContent = 'APPROVED';
-        document.getElementById('allocStatusBadge').className = 'metric-value badge-approved';
+// Allocation Engine Controls
+const runAllocationBtn = document.getElementById('runAllocationBtn');
+if (runAllocationBtn) {
+    runAllocationBtn.addEventListener('click', async () => {
+        const loading = document.getElementById('allocationLoading');
+        const panel = document.getElementById('allocationResultsPanel');
+        const tbody = document.querySelector('#allocationTable tbody');
+        const feedback = document.getElementById('approvalFeedback');
+        if (feedback) feedback.textContent = '';
 
-        // Refresh trips and buses
-        fetchTrips();
-        fetchBuses();
-    } catch (err) {
-        feedback.textContent = `Approval failed: ${err.message}`;
-        feedback.className = 'feedback-msg text-danger';
-    }
-});
+        if (loading) loading.hidden = false;
+        if (panel) panel.hidden = true;
+
+        try {
+            const dateInput = document.getElementById('tripDateFilter')?.value
+                || (state.activeSession?.startedAt ? state.activeSession.startedAt.substring(0, 10) : '');
+            const sessionId = state.activeSession?.sessionId || 1;
+
+            const res = await fetch(`${API_BASE}/officer/allocations`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                    sessionId: sessionId,
+                    serviceDate: dateInput
+                })
+            });
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.message || `HTTP ${res.status}`);
+            }
+            const proposal = await res.json();
+            state.lastAllocationProposal = proposal;
+
+            if (loading) loading.hidden = true;
+            if (panel) panel.hidden = false;
+
+            const badge = document.getElementById('allocStatusBadge');
+            if (badge) {
+                badge.textContent = proposal.status || 'PROPOSED';
+                badge.className = 'metric-value badge-proposed';
+            }
+            const assignedCount = document.getElementById('allocAssignedCount');
+            if (assignedCount) assignedCount.textContent = proposal.assignments ? proposal.assignments.length : 0;
+            const baselineUnmet = document.getElementById('allocBaselineUnmet');
+            if (baselineUnmet) baselineUnmet.textContent = proposal.baselineUnmetDemand ?? 0;
+            const proposedUnmet = document.getElementById('allocProposedUnmet');
+            if (proposedUnmet) proposedUnmet.textContent = proposal.proposedUnmetDemand ?? 0;
+
+            if (!tbody) return;
+            if (!proposal.assignments || proposal.assignments.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center">No assignments generated.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = proposal.assignments.map(a => {
+                const isChanged = a.previousBusId !== a.proposedBusId;
+                const changeTag = isChanged 
+                    ? '<span class="status-badge badge-changed">Reassigned for Demand</span>'
+                    : '<span class="status-badge badge-same">Retained</span>';
+
+                const prevReg = a.previousBusRegistration || (a.previousBusId ? 'Bus #' + a.previousBusId : 'None');
+                const propReg = a.proposedBusRegistration || (a.proposedBusId ? 'Bus #' + a.proposedBusId : 'Unassigned');
+
+                const prevCap = a.previousCapacity ?? a.baselineCapacity ?? '-';
+                const propCap = a.proposedCapacity ?? '-';
+
+                return `
+                    <tr>
+                        <td><strong>#${a.tripId}</strong></td>
+                        <td>${a.departureTime ? (a.departureTime.length > 16 ? a.departureTime.substring(11, 16) : a.departureTime) : '-'}</td>
+                        <td>${prevReg}</td>
+                        <td>${prevCap}</td>
+                        <td><strong>${propReg}</strong></td>
+                        <td><strong>${propCap}</strong></td>
+                        <td>${changeTag}</td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (err) {
+            if (loading) loading.hidden = true;
+            alert(`Allocation computation failed: ${err.message}`);
+        }
+    });
+}
+
+const approveAllocationBtn = document.getElementById('approveAllocationBtn');
+if (approveAllocationBtn) {
+    approveAllocationBtn.addEventListener('click', async () => {
+        if (!state.lastAllocationProposal || !state.lastAllocationProposal.allocationRunId) {
+            alert('No active allocation proposal to approve. Please run allocation first.');
+            return;
+        }
+
+        const feedback = document.getElementById('approvalFeedback');
+        if (feedback) {
+            feedback.textContent = 'Persisting approved allocation to database...';
+            feedback.className = 'feedback-msg text-info';
+        }
+
+        try {
+            const res = await fetch(`${API_BASE}/officer/allocations/approve`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                    allocationRunId: state.lastAllocationProposal.allocationRunId
+                })
+            });
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.message || `HTTP ${res.status}`);
+            }
+            const result = await res.json();
+
+            if (feedback) {
+                feedback.textContent = `Allocation #${state.lastAllocationProposal.allocationRunId} successfully APPROVED and persisted into operational schedule!`;
+                feedback.className = 'feedback-msg text-success';
+            }
+            const badge = document.getElementById('allocStatusBadge');
+            if (badge) {
+                badge.textContent = 'APPROVED';
+                badge.className = 'metric-value badge-approved';
+            }
+
+            // Refresh trips and buses so approved assignments reflect immediately
+            fetchTrips();
+            fetchBuses();
+        } catch (err) {
+            if (feedback) {
+                feedback.textContent = `Approval failed: ${err.message}`;
+                feedback.className = 'feedback-msg text-danger';
+            }
+        }
+    });
+}
 
 // Button triggers
-document.getElementById('refreshBusesBtn').addEventListener('click', fetchBuses);
-document.getElementById('refreshTripsBtn').addEventListener('click', fetchTrips);
+const refreshBusesBtn = document.getElementById('refreshBusesBtn');
+if (refreshBusesBtn) refreshBusesBtn.addEventListener('click', fetchBuses);
+
+const refreshTripsBtn = document.getElementById('refreshTripsBtn');
+if (refreshTripsBtn) refreshTripsBtn.addEventListener('click', fetchTrips);
 
 // Session Configuration (SRS F4 / U2)
 function renderSessionConfig() {
@@ -533,8 +700,10 @@ const saveSessionConfigBtn = document.getElementById('saveSessionConfigBtn');
 if (saveSessionConfigBtn) {
     saveSessionConfigBtn.addEventListener('click', async () => {
         const feedback = document.getElementById('sessionConfigFeedback');
-        feedback.textContent = 'Saving session configuration...';
-        feedback.className = 'feedback-msg text-info';
+        if (feedback) {
+            feedback.textContent = 'Saving session configuration...';
+            feedback.className = 'feedback-msg text-info';
+        }
 
         const selectedRoutes = Array.from(document.querySelectorAll('.session-route-check:checked'))
             .map(cb => parseInt(cb.value, 10));
@@ -542,8 +711,10 @@ if (saveSessionConfigBtn) {
             .map(cb => parseInt(cb.value, 10));
 
         if (selectedRoutes.length === 0 || selectedBuses.length === 0) {
-            feedback.textContent = 'Please select at least one route and one bus for the session.';
-            feedback.className = 'feedback-msg text-danger';
+            if (feedback) {
+                feedback.textContent = 'Please select at least one route and one bus for the session.';
+                feedback.className = 'feedback-msg text-danger';
+            }
             return;
         }
 
@@ -560,11 +731,15 @@ if (saveSessionConfigBtn) {
             });
 
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            feedback.textContent = `Session configuration saved (${selectedRoutes.length} routes, ${selectedBuses.length} buses active).`;
-            feedback.className = 'feedback-msg text-success';
+            if (feedback) {
+                feedback.textContent = `Session configuration saved (${selectedRoutes.length} routes, ${selectedBuses.length} buses active).`;
+                feedback.className = 'feedback-msg text-success';
+            }
         } catch (err) {
-            feedback.textContent = `Failed to save session configuration: ${err.message}`;
-            feedback.className = 'feedback-msg text-danger';
+            if (feedback) {
+                feedback.textContent = `Failed to save session configuration: ${err.message}`;
+                feedback.className = 'feedback-msg text-danger';
+            }
         }
     });
 }
