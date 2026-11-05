@@ -1,4 +1,3 @@
-
 package com.vaahansetu.repository;
 
 import java.time.LocalDate;
@@ -54,7 +53,10 @@ public class RouteRepository {
 
     // Get buses actively allocated to a route for today
     public List<Map<String, Object>> findAllocatedBuses(Long routeId) {
+        return findAllocatedBuses(routeId, null);
+    }
 
+    public List<Map<String, Object>> findAllocatedBuses(Long routeId, LocalDate serviceDate) {
         String sql = """
                 SELECT b.bus_id AS "busId",
                        b.registration_number AS "registrationNumber",
@@ -67,7 +69,11 @@ public class RouteRepository {
                 JOIN trip_assignments ta ON ta.trip_id = st.trip_id
                 JOIN buses b ON b.bus_id = ta.bus_id
                 WHERE st.route_id = ?
-                  AND st.service_date = ?
+                  AND st.service_date = COALESCE(?,
+                        (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                        (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ?),
+                        (SELECT MAX(service_date) FROM scheduled_trips),
+                        CURRENT_DATE)
                   AND ta.status = 'ACTIVE'
                   AND b.status = 'ACTIVE'
                 ORDER BY st.departure_time
@@ -76,7 +82,8 @@ public class RouteRepository {
         return jdbcTemplate.queryForList(
                 sql,
                 routeId,
-                LocalDate.now()
+                serviceDate,
+                routeId
         );
     }
 }

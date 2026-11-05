@@ -18,7 +18,10 @@ public class JourneyRepository {
 
     // Find today's trips that have an active allocated bus
     public List<Map<String, Object>> findTodaysTrips(Long routeId) {
+        return findTodaysTrips(routeId, null);
+    }
 
+    public List<Map<String, Object>> findTodaysTrips(Long routeId, LocalDate serviceDate) {
         String sql = """
                 SELECT DISTINCT
                        st.trip_id AS "tripId",
@@ -38,7 +41,11 @@ public class JourneyRepository {
                 LEFT JOIN buses b
                     ON b.bus_id = ta.bus_id
                 WHERE st.route_id = ?
-                  AND st.service_date = ?
+                  AND st.service_date = COALESCE(?,
+                        (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                        (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ?),
+                        (SELECT MAX(service_date) FROM scheduled_trips),
+                        CURRENT_DATE)
                   AND ta.status = 'ACTIVE'
                   AND st.status = 'SCHEDULED'
                   AND b.status = 'ACTIVE'
@@ -48,13 +55,17 @@ public class JourneyRepository {
         return jdbcTemplate.queryForList(
                 sql,
                 routeId,
-                LocalDate.now()
+                serviceDate,
+                routeId
         );
     }
 
     // Find all trips for a route today (whether bus is allocated yet or not)
     public List<Map<String, Object>> findTripsForRoute(Long routeId) {
+        return findTripsForRoute(routeId, null);
+    }
 
+    public List<Map<String, Object>> findTripsForRoute(Long routeId, LocalDate serviceDate) {
         String sql = """
                 SELECT st.trip_id AS "tripId",
                        st.route_id AS "routeId",
@@ -73,7 +84,11 @@ public class JourneyRepository {
                 LEFT JOIN buses b
                     ON b.bus_id = ta.bus_id
                 WHERE st.route_id = ?
-                  AND st.service_date = ?
+                  AND st.service_date = COALESCE(?,
+                        (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                        (SELECT MAX(service_date) FROM scheduled_trips WHERE route_id = ?),
+                        (SELECT MAX(service_date) FROM scheduled_trips),
+                        CURRENT_DATE)
                   AND st.status = 'SCHEDULED'
                 ORDER BY st.departure_time
                 """;
@@ -81,7 +96,8 @@ public class JourneyRepository {
         return jdbcTemplate.queryForList(
                 sql,
                 routeId,
-                LocalDate.now()
+                serviceDate,
+                routeId
         );
     }
 

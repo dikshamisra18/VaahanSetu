@@ -2,8 +2,7 @@ package com.vaahansetu.repository;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -48,6 +47,21 @@ public class OfficerRepository {
         if (session == null) return null;
         Object id = session.get("sessionId");
         return id == null ? null : ((Number) id).longValue();
+    }
+
+    public LocalDate findActiveSessionDate() {
+        String sql = """
+                SELECT COALESCE(
+                    (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                    (SELECT MAX(service_date) FROM scheduled_trips),
+                    CURRENT_DATE
+                )
+                """;
+        try {
+            return jdbcTemplate.queryForObject(sql, LocalDate.class);
+        } catch (Exception e) {
+            return LocalDate.now();
+        }
     }
 
     // ----------------------------------------------------------------
@@ -151,7 +165,10 @@ public class OfficerRepository {
                 LEFT JOIN trip_assignments ta
                     ON ta.trip_id = t.trip_id AND ta.status = 'ACTIVE'
                 LEFT JOIN buses b ON b.bus_id = ta.bus_id
-                WHERE t.service_date = ?
+                WHERE t.service_date = COALESCE(?,
+                        (SELECT started_at::date FROM planning_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1),
+                        (SELECT MAX(service_date) FROM scheduled_trips),
+                        CURRENT_DATE)
                   AND t.status = 'SCHEDULED'
                 ORDER BY t.departure_time, t.trip_id
                 """;
@@ -454,6 +471,41 @@ public class OfficerRepository {
                 runId, tripId, previousBusId, proposedBusId, type, reason);
     }
 
+    public void insertAllocationAssignmentsBatch(long runId, List<com.vaahansetu.allocation.AllocationModels.TripOutcome> outcomes, boolean isBaseline) {
+        if (outcomes == null || outcomes.isEmpty()) return;
+        String sql = "INSERT INTO allocation_assignments " +
+                "(allocation_run_id, trip_id, previous_bus_id, proposed_bus_id, assignment_type, reason) " +
+                "VALUES (?, ?, ?, ?, ?::allocation_assignment_type, ?)" +
+                " ON CONFLICT (allocation_run_id, trip_id) DO NOTHING";
+        jdbcTemplate.batchUpdate(sql, new org.springframework.jdbc.core.BatchPreparedStatementSetter() {
+            @Override
+            public void setValues(java.sql.PreparedStatement ps, int i) throws java.sql.SQLException {
+                com.vaahansetu.allocation.AllocationModels.TripOutcome o = outcomes.get(i);
+                ps.setLong(1, runId);
+                ps.setLong(2, o.tripId());
+                if (isBaseline) {
+                    if (o.previousBusId() == null) ps.setNull(3, java.sql.Types.BIGINT);
+                    else ps.setLong(3, o.previousBusId());
+                    if (o.previousBusId() == null) ps.setNull(4, java.sql.Types.BIGINT);
+                    else ps.setLong(4, o.previousBusId());
+                    ps.setString(5, o.previousBusId() == null ? "UNASSIGNED" : "UNCHANGED");
+                    ps.setString(6, o.previousBusId() == null ? "No bus assigned." : "Current assignment.");
+                } else {
+                    if (o.previousBusId() == null) ps.setNull(3, java.sql.Types.BIGINT);
+                    else ps.setLong(3, o.previousBusId());
+                    if (o.proposedBusId() == null) ps.setNull(4, java.sql.Types.BIGINT);
+                    else ps.setLong(4, o.proposedBusId());
+                    ps.setString(5, o.type());
+                    ps.setString(6, o.reason());
+                }
+            }
+            @Override
+            public int getBatchSize() {
+                return outcomes.size();
+            }
+        });
+    }
+
     public void insertSegmentResult(long runId, long routeId,
                                      long startStopId, long endStopId,
                                      int demand, int capacity,
@@ -465,6 +517,33 @@ public class OfficerRepository {
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 runId, routeId, startStopId, endStopId,
                 demand, capacity, accommodated, unmet, unused);
+    }
+
+    public void insertSegmentResultsBatch(long runId, List<com.vaahansetu.allocation.AllocationModels.SegmentRow> segments) {
+        if (segments == null || segments.isEmpty()) return;
+        String sql = "INSERT INTO allocation_segment_results " +
+                "(allocation_run_id, route_id, segment_start_stop_id, segment_end_stop_id, " +
+                " demand, allocated_capacity, accommodated, unmet_demand, unused_capacity) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        jdbcTemplate.batchUpdate(sql, new org.springframework.jdbc.core.BatchPreparedStatementSetter() {
+            @Override
+            public void setValues(java.sql.PreparedStatement ps, int i) throws java.sql.SQLException {
+                com.vaahansetu.allocation.AllocationModels.SegmentRow seg = segments.get(i);
+                ps.setLong(1, runId);
+                ps.setLong(2, seg.routeId());
+                ps.setLong(3, seg.startStopId());
+                ps.setLong(4, seg.endStopId());
+                ps.setInt(5, seg.demand());
+                ps.setInt(6, seg.capacity());
+                ps.setInt(7, seg.accommodated());
+                ps.setInt(8, seg.unmet());
+                ps.setInt(9, seg.unused());
+            }
+            @Override
+            public int getBatchSize() {
+                return segments.size();
+            }
+        });
     }
 
     public void deleteExistingAllocationRuns(long sessionId, String notePrefix) {
@@ -492,7 +571,19 @@ public class OfficerRepository {
                 WHERE r.is_active = TRUE
                 ORDER BY r.route_id
                 """;
-        return jdbcTemplate.queryForList(sql, sessionId);
+        List<Map<String, Object>> list = jdbcTemplate.queryForList(sql, sessionId);
+        if (list.isEmpty()) {
+            String fallbackSql = """
+                    SELECT r.route_id   AS "routeId",
+                           r.route_code AS "routeCode",
+                           r.route_name AS "routeName"
+                    FROM routes r
+                    WHERE r.is_active = TRUE
+                    ORDER BY r.route_id
+                    """;
+            return jdbcTemplate.queryForList(fallbackSql);
+        }
+        return list;
     }
 
     public List<Map<String, Object>> findEngineStopsForRoute(long routeId) {
@@ -506,6 +597,24 @@ public class OfficerRepository {
         return jdbcTemplate.queryForList(sql, routeId);
     }
 
+    public Map<Long, List<Long>> findAllEngineStopsByRoute() {
+        String sql = """
+                SELECT rs.route_id AS "routeId", rs.stop_id AS "stopId"
+                FROM route_stops rs
+                JOIN stops s ON s.stop_id = rs.stop_id
+                WHERE s.is_active = TRUE
+                ORDER BY rs.route_id, rs.stop_sequence
+                """;
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+        Map<Long, List<Long>> map = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            long routeId = ((Number) row.get("routeId")).longValue();
+            long stopId = ((Number) row.get("stopId")).longValue();
+            map.computeIfAbsent(routeId, k -> new ArrayList<>()).add(stopId);
+        }
+        return map;
+    }
+
     public List<Map<String, Object>> findEngineBuses(long sessionId) {
         String sql = """
                 SELECT b.bus_id                AS "busId",
@@ -516,12 +625,15 @@ public class OfficerRepository {
                        b.rest_duration_minutes AS "restDurationMinutes",
                        b.rest_start            AS "restStart",
                        b.rest_end              AS "restEnd",
-                       (sb.bus_id IS NOT NULL) AS "selectedForSession"
+                       (
+                           NOT EXISTS (SELECT 1 FROM session_buses sb_check WHERE sb_check.session_id = ?)
+                           OR sb.bus_id IS NOT NULL
+                       ) AS "selectedForSession"
                 FROM buses b
                 LEFT JOIN session_buses sb ON sb.bus_id = b.bus_id AND sb.session_id = ?
                 ORDER BY b.bus_id
                 """;
-        return jdbcTemplate.queryForList(sql, sessionId);
+        return jdbcTemplate.queryForList(sql, sessionId, sessionId);
     }
 
     public List<Map<String, Object>> findEngineTrips(long sessionId, LocalDate serviceDate,
@@ -534,16 +646,20 @@ public class OfficerRepository {
                        ta.bus_id               AS "currentBusId",
                        COALESCE(b.capacity, 0) AS "currentBusCapacity"
                 FROM scheduled_trips t
-                JOIN session_routes sr ON sr.route_id = t.route_id AND sr.session_id = ?
+                JOIN routes r ON r.route_id = t.route_id AND r.is_active = TRUE
                 LEFT JOIN trip_assignments ta
                     ON ta.trip_id = t.trip_id AND ta.status = 'ACTIVE'
                 LEFT JOIN buses b ON b.bus_id = ta.bus_id
                 WHERE t.status = 'SCHEDULED'
                   AND t.service_date = ?
                   AND t.departure_time >= ?
+                  AND (
+                      NOT EXISTS (SELECT 1 FROM session_routes sr WHERE sr.session_id = ?)
+                      OR t.route_id IN (SELECT sr2.route_id FROM session_routes sr2 WHERE sr2.session_id = ?)
+                  )
                 ORDER BY t.departure_time, t.trip_id
                 """;
-        return jdbcTemplate.queryForList(sql, sessionId, serviceDate, fromTime);
+        return jdbcTemplate.queryForList(sql, serviceDate, fromTime, sessionId, sessionId);
     }
 
     public List<Map<String, Object>> findEngineJourneys(long sessionId, LocalDate serviceDate,
@@ -555,14 +671,17 @@ public class OfficerRepository {
                        pj.passenger_count      AS "passengerCount"
                 FROM passenger_journeys pj
                 JOIN scheduled_trips t ON t.trip_id = pj.trip_id
-                JOIN session_routes sr ON sr.route_id = t.route_id AND sr.session_id = pj.session_id
                 WHERE pj.session_id = ?
                   AND pj.journey_status IN ('REGISTERED','BOARDED','COMPLETED')
                   AND t.status = 'SCHEDULED'
                   AND t.service_date = ?
                   AND t.departure_time >= ?
+                  AND (
+                      NOT EXISTS (SELECT 1 FROM session_routes sr WHERE sr.session_id = ?)
+                      OR t.route_id IN (SELECT sr2.route_id FROM session_routes sr2 WHERE sr2.session_id = ?)
+                  )
                 """;
-        return jdbcTemplate.queryForList(sql, sessionId, serviceDate, fromTime);
+        return jdbcTemplate.queryForList(sql, sessionId, serviceDate, fromTime, sessionId, sessionId);
     }
 
     public List<Map<String, Object>> findEngineCommitments(LocalDate serviceDate) {

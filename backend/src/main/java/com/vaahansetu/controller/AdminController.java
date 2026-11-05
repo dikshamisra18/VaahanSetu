@@ -44,16 +44,22 @@ public class AdminController {
         }
 
         @SuppressWarnings("unchecked")
-        List<Number> rawRoutes = (List<Number>) body.get("routeIds");
+        List<?> rawRoutes = (List<?>) body.get("routeIds");
         @SuppressWarnings("unchecked")
-        List<Number> rawBuses = (List<Number>) body.get("busIds");
+        List<?> rawBuses = (List<?>) body.get("busIds");
 
         if (rawRoutes == null || rawBuses == null) {
             return ResponseEntity.badRequest().body(Map.of("message", "routeIds and busIds are required."));
         }
 
-        List<Long> routeIds = rawRoutes.stream().map(Number::longValue).toList();
-        List<Long> busIds = rawBuses.stream().map(Number::longValue).toList();
+        List<Long> routeIds = rawRoutes.stream()
+                .filter(v -> v != null)
+                .map(v -> Long.parseLong(v.toString().trim()))
+                .toList();
+        List<Long> busIds = rawBuses.stream()
+                .filter(v -> v != null)
+                .map(v -> Long.parseLong(v.toString().trim()))
+                .toList();
 
         officerService.saveSelection(sessionId, routeIds, busIds);
         return ResponseEntity.ok(Map.of("message", "Session selection saved successfully."));
@@ -76,7 +82,12 @@ public class AdminController {
         }
 
         if (body != null && "ADVANCE_CLOCK".equalsIgnoreCase(String.valueOf(body.get("action")))) {
-            int minutes = body.get("minutes") != null ? ((Number) body.get("minutes")).intValue() : 2;
+            int minutes = 2;
+            if (body.get("minutes") != null) {
+                try {
+                    minutes = Integer.parseInt(body.get("minutes").toString().trim());
+                } catch (Exception ignored) {}
+            }
             int elapsed = officerService.advanceClock(minutes);
             String currentTime = body.get("currentTime") != null ? body.get("currentTime").toString() : "10:02:00";
             return ResponseEntity.ok(Map.of(
@@ -93,12 +104,23 @@ public class AdminController {
             return ResponseEntity.badRequest().body(Map.of("message", "tripId is required."));
         }
 
-        long tripId = ((Number) body.get("tripId")).longValue();
+        long tripId;
+        try {
+            tripId = Long.parseLong(body.get("tripId").toString().trim());
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Invalid tripId: " + body.get("tripId")));
+        }
+
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> segments = (List<Map<String, Object>>) body.get("segments");
 
         if ((segments == null || segments.isEmpty()) && body.get("demandDelta") != null) {
-            int delta = ((Number) body.get("demandDelta")).intValue();
+            int delta;
+            try {
+                delta = Integer.parseInt(body.get("demandDelta").toString().trim());
+            } catch (Exception e) {
+                return ResponseEntity.badRequest().body(Map.of("message", "Invalid demandDelta: " + body.get("demandDelta")));
+            }
             List<Map<String, Object>> existingSegments = officerService.getSegmentDemand(tripId);
             if (existingSegments.isEmpty()) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -106,8 +128,8 @@ public class AdminController {
             }
             List<Map<String, Object>> builtSegments = new ArrayList<>();
             for (Map<String, Object> seg : existingSegments) {
-                long startStopId = ((Number) seg.get("startStopId")).longValue();
-                long endStopId = ((Number) seg.get("endStopId")).longValue();
+                long startStopId = Long.parseLong(seg.get("startStopId").toString().trim());
+                long endStopId = Long.parseLong(seg.get("endStopId").toString().trim());
                 builtSegments.add(Map.of(
                         "startStopId", startStopId,
                         "endStopId", endStopId,

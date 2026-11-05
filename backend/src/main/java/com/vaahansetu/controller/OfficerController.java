@@ -2,6 +2,7 @@ package com.vaahansetu.controller;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -75,7 +76,7 @@ public class OfficerController {
     }
 
     // ----------------------------------------------------------------
-    // Scheduled Trips
+    // Scheduled trips
     // ----------------------------------------------------------------
 
     @GetMapping("/trips")
@@ -147,15 +148,66 @@ public class OfficerController {
                     .body(Map.of("message", "Only administrators can run simulations."));
         }
 
+        if (body != null && "ADVANCE_CLOCK".equalsIgnoreCase(String.valueOf(body.get("action")))) {
+            int minutes = 2;
+            if (body.get("minutes") != null) {
+                try {
+                    minutes = Integer.parseInt(body.get("minutes").toString().trim());
+                } catch (Exception ignored) {}
+            }
+            int elapsed = officerService.advanceClock(minutes);
+            String currentTime = body.get("currentTime") != null ? body.get("currentTime").toString() : "10:02:00";
+            return ResponseEntity.ok(Map.of(
+                    "status", "SUCCESS",
+                    "action", "ADVANCE_CLOCK",
+                    "minutes", minutes,
+                    "currentTime", currentTime,
+                    "simulationElapsedMinutes", elapsed,
+                    "message", "Simulation clock advanced by " + minutes + " minutes (Elapsed: T+" + String.format("%02d:%02d", elapsed / 60, elapsed % 60) + ")"
+            ));
+        }
+
         if (body == null || body.get("tripId") == null) {
             return ResponseEntity.badRequest().body(Map.of("message", "tripId is required."));
         }
 
-        long tripId = ((Number) body.get("tripId")).longValue();
+        long tripId;
+        try {
+            tripId = Long.parseLong(body.get("tripId").toString().trim());
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Invalid tripId: " + body.get("tripId")));
+        }
+
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> segments = (List<Map<String, Object>>) body.get("segments");
+
+        if ((segments == null || segments.isEmpty()) && body.get("demandDelta") != null) {
+            int delta;
+            try {
+                delta = Integer.parseInt(body.get("demandDelta").toString().trim());
+            } catch (Exception e) {
+                return ResponseEntity.badRequest().body(Map.of("message", "Invalid demandDelta: " + body.get("demandDelta")));
+            }
+            List<Map<String, Object>> existingSegments = officerService.getSegmentDemand(tripId);
+            if (existingSegments.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Map.of("message", "Trip " + tripId + " not found or has no stops."));
+            }
+            List<Map<String, Object>> builtSegments = new ArrayList<>();
+            for (Map<String, Object> seg : existingSegments) {
+                long startStopId = Long.parseLong(seg.get("startStopId").toString().trim());
+                long endStopId = Long.parseLong(seg.get("endStopId").toString().trim());
+                builtSegments.add(Map.of(
+                        "startStopId", startStopId,
+                        "endStopId", endStopId,
+                        "delta", delta
+                ));
+            }
+            segments = builtSegments;
+        }
+
         if (segments == null || segments.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("message", "At least one segment is required."));
+            return ResponseEntity.badRequest().body(Map.of("message", "At least one segment or demand delta is required."));
         }
 
         try {
@@ -178,17 +230,29 @@ public class OfficerController {
 
         if (!isAuthenticated(auth)) return unauthorized();
 
-        LocalDateTime allocationTime = LocalDateTime.now();
+        Long sessionId = null;
+        if (body != null && body.get("sessionId") != null) {
+            try {
+                sessionId = ((Number) body.get("sessionId")).longValue();
+            } catch (Exception ignored) {}
+        }
+
+        LocalDate serviceDate = null;
+        if (body != null && body.get("serviceDate") != null) {
+            try {
+                serviceDate = LocalDate.parse(body.get("serviceDate").toString().trim());
+            } catch (Exception ignored) {}
+        }
+
+        LocalDateTime allocationTime = null;
         if (body != null && body.get("allocationTime") != null) {
             try {
-                allocationTime = LocalDateTime.parse(body.get("allocationTime").toString());
-            } catch (Exception ignored) {
-                // Fall through to use now()
-            }
+                allocationTime = LocalDateTime.parse(body.get("allocationTime").toString().trim());
+            } catch (Exception ignored) {}
         }
 
         try {
-            Map<String, Object> result = officerService.runAllocation(allocationTime);
+            Map<String, Object> result = officerService.runAllocation(sessionId, serviceDate, allocationTime);
             return ResponseEntity.status(HttpStatus.CREATED).body(result);
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT)

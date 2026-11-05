@@ -89,7 +89,7 @@ public class OfficerService {
     // ----------------------------------------------------------------
 
     public List<Map<String, Object>> getTrips(LocalDate serviceDate) {
-        return repo.findScheduledTrips(serviceDate == null ? LocalDate.now() : serviceDate);
+        return repo.findScheduledTrips(serviceDate == null ? repo.findActiveSessionDate() : serviceDate);
     }
 
     // ----------------------------------------------------------------
@@ -138,12 +138,23 @@ public class OfficerService {
      */
     @Transactional
     public Map<String, Object> runAllocation(LocalDateTime allocationTime) {
-        Long sessionId = repo.findActiveSessionId();
+        return runAllocation(null, null, allocationTime);
+    }
+
+    @Transactional
+    public Map<String, Object> runAllocation(Long targetSessionId, LocalDate targetServiceDate, LocalDateTime targetAllocationTime) {
+        Long sessionId = targetSessionId != null ? targetSessionId : repo.findActiveSessionId();
         if (sessionId == null) {
             throw new IllegalStateException("No active planning session.");
         }
 
-        LocalDate serviceDate = allocationTime.toLocalDate();
+        LocalDate serviceDate = targetServiceDate != null
+                ? targetServiceDate
+                : (targetAllocationTime != null ? targetAllocationTime.toLocalDate() : repo.findActiveSessionDate());
+
+        LocalDateTime allocationTime = targetAllocationTime != null
+                ? targetAllocationTime
+                : serviceDate.atStartOfDay();
 
         // Load allocation engine input from DB
         com.vaahansetu.allocation.AllocationModels.Input input =
@@ -170,35 +181,13 @@ public class OfficerService {
                 result.afterTotal().unmet(), result.afterTotal().unused(),
                 null, proposedNote);
 
-        // Persist assignments
-        for (com.vaahansetu.allocation.AllocationModels.TripOutcome outcome : result.outcomes()) {
-            // Baseline: keep whatever bus was assigned
-            repo.insertAllocationAssignment(baselineRunId, outcome.tripId(),
-                    outcome.previousBusId(), outcome.previousBusId(),
-                    outcome.previousBusId() == null ? "UNASSIGNED" : "UNCHANGED",
-                    outcome.previousBusId() == null ? "No bus assigned." : "Current assignment.");
+        // Persist assignments in fast batches
+        repo.insertAllocationAssignmentsBatch(baselineRunId, result.outcomes(), true);
+        repo.insertAllocationAssignmentsBatch(proposedRunId, result.outcomes(), false);
 
-            // Proposed
-            repo.insertAllocationAssignment(proposedRunId, outcome.tripId(),
-                    outcome.previousBusId(), outcome.proposedBusId(),
-                    outcome.type(), outcome.reason());
-        }
-
-        // Persist segment results (baseline)
-        for (com.vaahansetu.allocation.AllocationModels.SegmentRow seg : result.beforeSegments()) {
-            repo.insertSegmentResult(baselineRunId, seg.routeId(),
-                    seg.startStopId(), seg.endStopId(),
-                    seg.demand(), seg.capacity(),
-                    seg.accommodated(), seg.unmet(), seg.unused());
-        }
-
-        // Persist segment results (proposed)
-        for (com.vaahansetu.allocation.AllocationModels.SegmentRow seg : result.afterSegments()) {
-            repo.insertSegmentResult(proposedRunId, seg.routeId(),
-                    seg.startStopId(), seg.endStopId(),
-                    seg.demand(), seg.capacity(),
-                    seg.accommodated(), seg.unmet(), seg.unused());
-        }
+        // Persist segment results in fast batches
+        repo.insertSegmentResultsBatch(baselineRunId, result.beforeSegments());
+        repo.insertSegmentResultsBatch(proposedRunId, result.afterSegments());
 
         // Build response
         Map<String, Object> response = new LinkedHashMap<>();
@@ -254,18 +243,15 @@ public class OfficerService {
         if (run == null) {
             throw new IllegalArgumentException("Allocation run " + runId + " not found.");
         }
-        String status = (String) run.get("status");
-        if (!"PROPOSED".equals(status)) {
-            throw new IllegalStateException(
-                    "Allocation run " + runId + " has status " + status +
-                    " and cannot be approved.");
+        if ("APPROVED".equals(run.get("status"))) {
+            return Map.of("message", "Allocation run " + runId + " is already approved.",
+                    "status", "APPROVED");
         }
+
         repo.approveAllocationRun(runId, approvedByUserId);
-        return Map.of(
-                "message", "Allocation run " + runId + " approved and applied successfully.",
-                "allocationRunId", runId,
-                "status", "APPROVED"
-        );
+        return Map.of("message", "Allocation run " + runId + " approved successfully.",
+                "status", "APPROVED",
+                "allocationRunId", runId);
     }
 
     // ----------------------------------------------------------------
@@ -331,12 +317,11 @@ public class OfficerService {
 
         // Routes
         List<Map<String, Object>> routeRows = repo.findEngineRoutes(sessionId);
+        Map<Long, List<Long>> allStops = repo.findAllEngineStopsByRoute();
         List<com.vaahansetu.allocation.AllocationModels.Route> routes = new ArrayList<>();
         for (Map<String, Object> rr : routeRows) {
             long routeId = toLong(rr.get("routeId"));
-            List<Map<String, Object>> stopRows = repo.findEngineStopsForRoute(routeId);
-            List<Long> stopIds = new ArrayList<>();
-            for (Map<String, Object> sr : stopRows) stopIds.add(toLong(sr.get("stopId")));
+            List<Long> stopIds = allStops.getOrDefault(routeId, List.of());
             routes.add(new com.vaahansetu.allocation.AllocationModels.Route(
                     routeId,
                     (String) rr.get("routeCode"),

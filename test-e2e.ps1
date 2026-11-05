@@ -60,6 +60,7 @@ $destinationStopId = $stops[-1].stopId
 $trips = Invoke-RestMethod -Uri "$baseUrl/routes/$testRouteId/trips" -Method GET
 Assert-Step 3 "Passenger views scheduled trips for route" ($trips.Count -gt 0) "Found $($trips.Count) trips for route $testRouteId. First trip ID: $($trips[0].tripId) @ $($trips[0].departureTime)"
 $testTripId = $trips[0].tripId
+$serviceDate = if ($trips[0].serviceDate) { $trips[0].serviceDate } else { "2026-11-05" }
 
 # ----------------------------------------------------
 # Step 4: Passenger registers a journey
@@ -164,7 +165,7 @@ Assert-Step 7 "Officer views segment-level passenger demand" ($demand.Count -gt 
 # ----------------------------------------------------
 # Step 8: Officer triggers greedy allocation engine
 # ----------------------------------------------------
-$allocPayload = @{ sessionId = 1; serviceDate = "2026-11-04" } | ConvertTo-Json
+$allocPayload = @{ sessionId = 1; serviceDate = $serviceDate } | ConvertTo-Json
 $allocRes = Invoke-RestMethod -Uri "$baseUrl/officer/allocations" -Method POST -Headers $officerHeaders -ContentType "application/json" -Body $allocPayload
 Assert-Step 8 "Officer generates allocation proposal via engine" ($allocRes.allocationRunId -gt 0 -and $allocRes.assignments.Count -gt 0) "Allocation Run ID: $($allocRes.allocationRunId), Status: $($allocRes.status), Assignments: $($allocRes.assignments.Count)"
 $runId = $allocRes.allocationRunId
@@ -185,7 +186,7 @@ Assert-Step 10 "Authorized approval persists proposal to database" ($approveRes.
 # ----------------------------------------------------
 # Step 11: Verify operational schedule reflects updated assignment
 # ----------------------------------------------------
-$updatedTrips = Invoke-RestMethod -Uri "$baseUrl/officer/trips?date=2026-11-04" -Method GET -Headers $officerHeaders
+$updatedTrips = Invoke-RestMethod -Uri "$baseUrl/officer/trips?date=$serviceDate" -Method GET -Headers $officerHeaders
 $approvedTrip = $updatedTrips | Where-Object { $_.tripId -eq $testTripId }
 $busAssigned = if ($approvedTrip.currentBusRegistration) { $approvedTrip.currentBusRegistration } else { $approvedTrip.assignedBusNumber }
 $busCap = if ($approvedTrip.currentBusCapacity) { $approvedTrip.currentBusCapacity } else { $approvedTrip.busCapacity }
