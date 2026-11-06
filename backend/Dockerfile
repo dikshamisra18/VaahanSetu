@@ -3,14 +3,14 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
 
-# Install Maven via the official tarball (more reliable than apt on slim images)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL https://dlcdn.apache.org/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz -o /tmp/maven.tar.gz && \
-    tar xzf /tmp/maven.tar.gz -C /opt/ && \
-    ln -s /opt/apache-maven-3.9.9/bin/mvn /usr/local/bin/mvn && \
-    rm /tmp/maven.tar.gz
+# Install Maven via apt (Debian's package manager has a working Maven package,
+# unlike Alpine's apk). This is the simplest, most reliable approach.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends maven && \
+    rm -rf /var/lib/apt/lists/*
+
+# Verify Maven installed correctly
+RUN mvn -version
 
 # Pre-copy pom.xml and download deps (better Docker layer caching)
 COPY pom.xml .
